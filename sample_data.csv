@@ -1,0 +1,4 @@
+name,surname,email,number,skills,location
+John,Doe,john.doe@email.com,+123456789,"Python, SQL",Berlin
+Jane,Smith,jane.smith@email.com,+987654321,"JavaScript, React",Madrid
+Ali,Khan,ali.khan@email.com,+49111222333,"Data Analysis, Excel",Munich
