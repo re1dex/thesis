@@ -5,6 +5,7 @@ This project implements a Python command-line script that reads data from both a
 ## What was implemented
 
 - Script: `read_pdf_csv.py`
+- Script: `SimpleJobHunter.py`
 - Reads CSV file with expected columns:
 	- `name,surname,email,number,skills,location`
 - Parses each CSV row into structured data
@@ -14,7 +15,9 @@ This project implements a Python command-line script that reads data from both a
 - Prints extracted PDF text to console
 - Uses:
 	- `csv` (built-in) for CSV parsing
-	- `PyPDF2` for PDF reading
+	- `pdfplumber` for PDF reading
+	- `pandas` for tabular export
+	- `google-search-results` (SerpApi) for Google Jobs search
 
 ## Code structure
 
@@ -58,8 +61,37 @@ python .\read_pdf_csv.py
 python .\read_pdf_csv.py .\your_file.pdf .\your_file.csv
 ```
 
-### If PyPDF2 is missing
+### Integrated resume parsing from main script
+
+This runs the standard CSV+PDF reader and also executes built-in CVPlumber parsing from inside `read_pdf_csv.py`.
 
 ```powershell
-python -m pip install PyPDF2
+python .\read_pdf_csv.py ".\Raul's Resume.pdf" .\sample_data.csv --parse-resume --resume-output .\parsed_resumes_from_main.csv
+```
+
+### If pdfplumber is missing
+
+```powershell
+python -m pip install pdfplumber
+```
+
+## Job Search Script (SerpApi)
+
+`SimpleJobHunter.py` searches Google Jobs using SerpApi and exports results to CSV.
+
+- Prompts for SerpApi API key
+- Prompts for job title and country code
+- Fetches Google Jobs listings
+- Saves output as `<job_title>_jobs.csv`
+
+### Run JobHunter
+
+```powershell
+python .\SimpleJobHunter.py
+```
+
+### Install dependencies for JobHunter
+
+```powershell
+python -m pip install google-search-results pandas ipython
 ```
