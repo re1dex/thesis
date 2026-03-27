@@ -165,3 +165,30 @@ Or set it permanently:
 ## License
 
 This repository contains sample code for personal use. No license file is included.
+
+## Python UI (CV Upload + Output)
+
+The project now also includes a simple Python UI built with Streamlit.
+
+### What it does
+
+- Click to upload a CV (`.pdf`)
+- Shows selected CV filename
+- Click **Parse CV** button
+- Displays extracted PDF text
+- Displays parsed CV fields
+- Lets you download parsed fields as CSV
+
+### Install UI dependency
+
+```powershell
+python -m pip install streamlit
+```
+
+### Run UI
+
+```powershell
+streamlit run .\app.py
+```
+
+Then open the local URL shown in terminal (usually `http://localhost:8501`).
