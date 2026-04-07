@@ -23,7 +23,8 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     text_parts: List[str] = []
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            page_text = page.extract_text(x_tolerance=2, y_tolerance=2)
+            # Use smart extraction to preserve reading order in multi-column resumes.
+            page_text = _extract_page_text_smart(page)
             if page_text:
                 text_parts.append(page_text)
     return "\n".join(text_parts)
@@ -92,9 +93,50 @@ def _extract_name_and_surname(text: str) -> tuple[Optional[str], Optional[str], 
         "experience",
         "education",
         "skills",
+        "languages",
+        "interests",
+        "certificates",
+        "certifications",
+        "achievements",
+        "volunteer",
+        "volunteered",
+        "course",
+        "courses",
+        "student",
+    }
+    low_value_words = {
+        "communication",
+        "teamwork",
+        "problem-solving",
+        "problem",
+        "solving",
+        "adaptability",
+        "analysis",
+        "coding",
+        "management",
+        "full",
+        "professional",
+        "proficiency",
+        "native",
+        "bilingual",
     }
 
-    for line in lines[:10]:
+    def _looks_like_person_name(candidate_words: List[str]) -> bool:
+        if not (2 <= len(candidate_words) <= 4):
+            return False
+
+        for word in candidate_words:
+            normalized = word.replace("-", "").replace("'", "")
+            if not normalized.isalpha():
+                return False
+            if not word[:1].isupper():
+                return False
+            if word.lower() in low_value_words:
+                return False
+
+        return True
+
+    for line in lines[:40]:
         low = line.lower()
         if "@" in line:
             continue
@@ -106,7 +148,7 @@ def _extract_name_and_surname(text: str) -> tuple[Optional[str], Optional[str], 
             continue
 
         words = line.split()
-        if 2 <= len(words) <= 4 and all(word.replace("-", "").isalpha() for word in words):
+        if _looks_like_person_name(words):
             return line, words[0], words[-1]
 
     return None, None, None
@@ -125,6 +167,12 @@ def _extract_section(text: str, section_names: List[str]) -> Optional[str]:
     section_text: List[str] = []
     capture = False
 
+    def _normalize_heading(value: str) -> str:
+        lowered = value.strip().lower()
+        lowered = re.sub(r"[^a-z\s]", "", lowered)
+        lowered = re.sub(r"\s+", " ", lowered)
+        return lowered
+
     all_headings = {
         "summary",
         "profile",
@@ -134,23 +182,27 @@ def _extract_section(text: str, section_names: List[str]) -> Optional[str]:
         "education",
         "skills",
         "projects",
+        "certificates",
         "certifications",
+        "achievements",
         "languages",
         "awards",
         "interests",
         "publications",
         "volunteer",
+        "volunteered work experience",
         "contact",
     }
 
-    normalized_targets = {name.lower().strip() for name in section_names}
+    normalized_targets = {_normalize_heading(name) for name in section_names}
+    normalized_headings = {_normalize_heading(name) for name in all_headings}
     for raw_line in lines:
         line = raw_line.strip()
-        lowered = line.lower()
-        if lowered in normalized_targets:
+        normalized_line = _normalize_heading(line)
+        if normalized_line in normalized_targets:
             capture = True
             continue
-        if capture and lowered in all_headings:
+        if capture and normalized_line in normalized_headings:
             break
         if capture and line:
             section_text.append(line)
@@ -183,15 +235,69 @@ def extract_resume_data(text: str, file_name: Optional[str] = None) -> Dict[str,
         "linkedin": _extract_linkedin(cleaned),
         "skills": _extract_skills(cleaned),
         "education": _extract_section(cleaned, ["education", "academic background", "academic qualifications"]),
-        "experience": _extract_section(cleaned, ["experience", "work experience", "employment history", "professional experience"]),
+        "experience": _extract_section(
+            cleaned,
+            [
+                "experience",
+                "work experience",
+                "volunteered work experience",
+                "employment history",
+                "professional experience",
+            ],
+        ),
     }
 
 
 def _largest_column_gap(words: List[Dict[str, Any]], page_width: float) -> float | None:
-    x_positions = sorted(word["x0"] for word in words if "x0" in word)
-    if len(x_positions) < 20:
+    # First, try row-level split detection: find the largest horizontal gap inside each row.
+    sorted_words = sorted(words, key=lambda word: (word.get("top", 0.0), word.get("x0", 0.0)))
+    if len(sorted_words) < 20:
         return None
 
+    rows: List[List[Dict[str, Any]]] = []
+    y_tolerance = 3.0
+    for word in sorted_words:
+        if not rows:
+            rows.append([word])
+            continue
+
+        previous_top = rows[-1][0].get("top", 0.0)
+        current_top = word.get("top", 0.0)
+        if abs(current_top - previous_top) <= y_tolerance:
+            rows[-1].append(word)
+        else:
+            rows.append([word])
+
+    min_gap = max(50.0, page_width * 0.12)
+    row_split_points: List[float] = []
+
+    for row in rows:
+        ordered = sorted(row, key=lambda word: word.get("x0", 0.0))
+        if len(ordered) < 4:
+            continue
+
+        row_max_gap = 0.0
+        row_split_x = None
+        for index in range(len(ordered) - 1):
+            left_x1 = float(ordered[index].get("x1", ordered[index].get("x0", 0.0)))
+            right_x0 = float(ordered[index + 1].get("x0", 0.0))
+            gap = right_x0 - left_x1
+            if gap > row_max_gap:
+                row_max_gap = gap
+                row_split_x = (left_x1 + right_x0) / 2.0
+
+        if row_split_x is not None and row_max_gap >= min_gap:
+            row_split_points.append(row_split_x)
+
+    if len(row_split_points) >= 3:
+        row_split_points.sort()
+        mid = len(row_split_points) // 2
+        if len(row_split_points) % 2 == 0:
+            return (row_split_points[mid - 1] + row_split_points[mid]) / 2.0
+        return row_split_points[mid]
+
+    # Fallback: page-level largest gap over x0 values.
+    x_positions = sorted(word["x0"] for word in words if "x0" in word)
     max_gap = 0.0
     gap_index = -1
     for index in range(len(x_positions) - 1):
@@ -200,8 +306,6 @@ def _largest_column_gap(words: List[Dict[str, Any]], page_width: float) -> float
             max_gap = gap
             gap_index = index
 
-    # Require a meaningful gap before splitting into columns.
-    min_gap = max(50.0, page_width * 0.12)
     if gap_index == -1 or max_gap < min_gap:
         return None
 

@@ -1,22 +1,26 @@
+"""Google Jobs search helpers and optional CLI runner."""
+
 # Install once in terminal: pip install google-search-results pandas ipython
 
-import pandas as pd
-from serpapi import GoogleSearch
+import os
 from getpass import getpass
-from IPython.display import display
 from pathlib import Path
+from typing import Any, Optional
+
+import pandas as pd
+from IPython.display import display
+from serpapi import GoogleSearch
 
 # Try to import resume parser helpers; if unavailable, continue without parser.
 try:
-    from read_pdf_csv import extract_text_from_pdf_bytes, extract_resume_data, discover_file
+    from read_pdf_csv import discover_file, extract_resume_data, extract_text_from_pdf_bytes
+
     RESUME_PARSER_AVAILABLE = True
 except Exception:
     extract_text_from_pdf_bytes = None
     extract_resume_data = None
     discover_file = None
     RESUME_PARSER_AVAILABLE = False
-
-SERPAPI_API_KEY = getpass("Enter your SerpApi API key: ")
 
 
 def extract_apply_links(job):
@@ -33,13 +37,23 @@ def extract_apply_links(job):
     return links
 
 
-def search_google_jobs(job_title, limit=10, country="us", language="en"):
+def search_google_jobs(
+    job_title: str,
+    limit: int = 10,
+    country: str = "us",
+    language: str = "en",
+    api_key: Optional[str] = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    resolved_api_key = api_key or os.environ.get("SERPAPI_API_KEY", "").strip()
+    if not resolved_api_key:
+        raise ValueError("SerpApi API key is required.")
+
     params = {
         "engine": "google_jobs",
         "q": job_title,
         "hl": language,
         "gl": country,
-        "api_key": SERPAPI_API_KEY
+        "api_key": resolved_api_key,
     }
 
     search = GoogleSearch(params)
@@ -76,7 +90,7 @@ def search_google_jobs(job_title, limit=10, country="us", language="en"):
     return pd.DataFrame(rows), results
 
 
-def suggest_job_title_from_resume(resume_path):
+def suggest_job_title_from_resume(resume_path: Path) -> Optional[str]:
     if resume_path.exists() and resume_path.suffix.lower() == ".pdf" and RESUME_PARSER_AVAILABLE:
         try:
             pdf_bytes = resume_path.read_bytes()
@@ -98,44 +112,74 @@ def suggest_job_title_from_resume(resume_path):
     return None
 
 
-# Ask for an optional resume to auto-suggest a job title based on skills
-# Attempt to auto-discover a PDF in the script folder when the parser is available.
-script_dir = Path(__file__).resolve().parent
-suggested_title = None
-if RESUME_PARSER_AVAILABLE:
-    try:
-        pdf_path = discover_file(".pdf", script_dir)
-        print(f"Found PDF: {pdf_path.name} — attempting to parse for suggested job title.")
-        suggested_title = suggest_job_title_from_resume(pdf_path)
-    except FileNotFoundError:
-        # No PDF discovered; fall back to asking the user
-        resume_path_input = input("Path to resume PDF to auto-suggest job title (leave blank to skip): ").strip()
-        suggested_title = suggest_job_title_from_resume(Path(resume_path_input)) if resume_path_input else None
-else:
-    resume_path_input = input("Path to resume PDF to auto-suggest job title (leave blank to skip): ").strip()
-    suggested_title = suggest_job_title_from_resume(Path(resume_path_input)) if resume_path_input else None
+def _run_cli() -> None:
+    serpapi_api_key = os.environ.get("SERPAPI_API_KEY", "").strip() or getpass(
+        "Enter your SerpApi API key: "
+    )
 
-if suggested_title:
-    job_title = input(f"Enter job title (suggested: {suggested_title}) [Enter to use suggestion]: ").strip() or suggested_title
-else:
-    job_title = input("Enter job title: ").strip()
-
-country = input("Enter country code (default: us): ").strip().lower() or "us"
-jobs_df, raw_results = search_google_jobs(job_title, limit=10, country=country, language="en")
-
-if jobs_df.empty:
-    if isinstance(raw_results, dict) and raw_results.get("error"):
-        print(f"SerpApi error: {raw_results.get('error')}")
-    else:
-        print("No jobs found.")
-        if isinstance(raw_results, dict):
-            print(
-                "Debug info: "
-                f"jobs_results={len(raw_results.get('jobs_results', []))}, "
-                f"search_metadata_status={raw_results.get('search_metadata', {}).get('status')}"
+    # Ask for an optional resume to auto-suggest a job title based on skills.
+    script_dir = Path(__file__).resolve().parent
+    suggested_title = None
+    if RESUME_PARSER_AVAILABLE:
+        try:
+            pdf_path = discover_file(".pdf", script_dir)
+            print(f"Found PDF: {pdf_path.name} - attempting to parse for suggested job title.")
+            suggested_title = suggest_job_title_from_resume(pdf_path)
+        except FileNotFoundError:
+            resume_path_input = input(
+                "Path to resume PDF to auto-suggest job title (leave blank to skip): "
+            ).strip()
+            suggested_title = (
+                suggest_job_title_from_resume(Path(resume_path_input))
+                if resume_path_input
+                else None
             )
-else:
-    display(jobs_df)
-    output_file = f"{job_title.lower().replace(' ', '_')}_jobs.csv"
-    jobs_df.to_csv(output_file, index=False)
-    print(f"Saved: {output_file}")
+    else:
+        resume_path_input = input(
+            "Path to resume PDF to auto-suggest job title (leave blank to skip): "
+        ).strip()
+        suggested_title = (
+            suggest_job_title_from_resume(Path(resume_path_input))
+            if resume_path_input
+            else None
+        )
+
+    if suggested_title:
+        job_title = (
+            input(
+                f"Enter job title (suggested: {suggested_title}) [Enter to use suggestion]: "
+            ).strip()
+            or suggested_title
+        )
+    else:
+        job_title = input("Enter job title: ").strip()
+
+    country = input("Enter country code (default: us): ").strip().lower() or "us"
+    jobs_df, raw_results = search_google_jobs(
+        job_title,
+        limit=10,
+        country=country,
+        language="en",
+        api_key=serpapi_api_key,
+    )
+
+    if jobs_df.empty:
+        if isinstance(raw_results, dict) and raw_results.get("error"):
+            print(f"SerpApi error: {raw_results.get('error')}")
+        else:
+            print("No jobs found.")
+            if isinstance(raw_results, dict):
+                print(
+                    "Debug info: "
+                    f"jobs_results={len(raw_results.get('jobs_results', []))}, "
+                    f"search_metadata_status={raw_results.get('search_metadata', {}).get('status')}"
+                )
+    else:
+        display(jobs_df)
+        output_file = f"{job_title.lower().replace(' ', '_')}_jobs.csv"
+        jobs_df.to_csv(output_file, index=False)
+        print(f"Saved: {output_file}")
+
+
+if __name__ == "__main__":
+    _run_cli()

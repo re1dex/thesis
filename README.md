@@ -170,6 +170,52 @@ This repository contains sample code for personal use. No license file is includ
 
 The project now also includes a simple Python UI built with Streamlit.
 
+## Latest Updates (April 2026)
+
+This project was improved in three main areas: parser quality, job matching integration, and UI/UX design.
+
+### 1) Resume parser improvements (`read_pdf_csv.py`)
+
+- Better two-column extraction:
+  - Added smart page extraction that detects column split points based on the largest horizontal gap.
+  - Improved this further with row-level gap detection and median split fallback for more stable left/right ordering.
+- Better name extraction:
+  - Added stronger filters so non-name phrases (for example skill labels or language proficiency phrases) are not selected as `full_name`.
+- Better section extraction:
+  - Normalized heading matching and stop-heading detection.
+  - Expanded aliases so sections like volunteered work experience are captured more reliably.
+
+### 2) Job Hunter integration improvements (`SimpleJobHunter.py` + `app.py`)
+
+- Refactored `SimpleJobHunter.py` to be import-safe for Streamlit:
+  - Interactive CLI flow now runs only under `if __name__ == "__main__":`.
+  - `search_google_jobs(...)` now accepts an explicit `api_key` argument.
+- Streamlit app now includes a **Find Matching Job** flow:
+  - Suggests a job title from parsed resume skills.
+  - Lets user edit title, choose country code, provide SerpApi key.
+  - Runs search and shows jobs in-app.
+  - Supports downloading matching jobs as CSV.
+
+### 3) Streamlit visual redesign and accessibility (`app.py`)
+
+- Reworked layout into a dashboard style:
+  - Hero header
+  - KPI cards
+  - Progress indicator
+  - Tabs: Overview, Parsed Fields, Raw Text, Job Match
+- Added cleaner parsed-field presentation with confidence badges.
+- Added section coverage chart for quick visual review.
+- Improved readability/contrast for key UI text (tabs, status blocks, labels, uploader area).
+
+## Current UI Capabilities
+
+- Upload and parse a single PDF CV
+- View extracted raw text
+- View parsed structured fields
+- Download parsed data as CSV
+- Search matching jobs via SerpApi directly from the app
+- Download matching jobs as CSV
+
 ### What it does
 
 - Click to upload a CV (`.pdf`)
@@ -178,6 +224,9 @@ The project now also includes a simple Python UI built with Streamlit.
 - Displays extracted PDF text
 - Displays parsed CV fields
 - Lets you download parsed fields as CSV
+- Suggests a matching job title from parsed skills
+- Lets you run Google Jobs search from inside the UI
+- Lets you download matching jobs as CSV
 
 ### Install UI dependency
 
