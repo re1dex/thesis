@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import html
 import io
+import json
 import os
+import re
+import hashlib
+import logging
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
+from secrets import compare_digest
 
 import pandas as pd
 import streamlit as st
@@ -14,14 +22,23 @@ try:
 except Exception:
     search_google_jobs = None
     JOB_HUNTER_AVAILABLE = False
-from config import (
-    ALLOWED_UPLOAD_TYPES,
-    APP_TITLE,
-    DEFAULT_OUTPUT_FILENAME,
-    MAX_UPLOAD_SIZE_MB,
-)
+
+from config import ALLOWED_UPLOAD_TYPES, APP_TITLE, DEFAULT_OUTPUT_FILENAME, MAX_UPLOAD_SIZE_MB
 from read_pdf_csv import extract_resume_data, extract_text_from_pdf_bytes
 
+
+DATA_STORE_PATH = Path(__file__).resolve().with_name("dashboard_store.json")
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(Path(__file__).resolve().with_name("app.log")),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
 
@@ -32,9 +49,17 @@ def _inject_styles() -> None:
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap');
 
+        :root {
+            color-scheme: light !important;
+        }
+
         html, body, [class*="css"], .stApp {
             font-family: 'Manrope', sans-serif;
-            background: radial-gradient(circle at top right, #d7efe8 0%, #f3f5f6 42%, #f8faf9 100%);
+            background: radial-gradient(circle at top right, #bfe9ff 0%, #d9f2ff 38%, #edf8ff 100%);
+        }
+
+        .main .block-container {
+            background: transparent;
         }
 
         .hero {
@@ -132,6 +157,7 @@ def _inject_styles() -> None:
             font-size: 0.72rem;
             font-weight: 800;
             margin-left: 0.45rem;
+            cursor: help;
         }
 
         .badge-high { background: #d9f3e6; color: #0a6b44; }
@@ -152,6 +178,32 @@ def _inject_styles() -> None:
             color: #101820;
             font-weight: 800;
             margin: 0.1rem 0 0.6rem;
+        }
+
+        .coverage-note {
+            color: #102a30;
+            font-weight: 800;
+            font-size: 0.95rem;
+            margin-top: 0.35rem;
+        }
+
+        .best-job {
+            border-radius: 14px;
+            border: 1px solid #0f4c5c;
+            background: #f0f7f9;
+            padding: 0.9rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .best-job h4 {
+            margin: 0 0 0.35rem;
+            color: #0f4c5c;
+        }
+
+        .best-job,
+        .best-job div,
+        .best-job strong {
+            color: #12343b;
         }
 
         .stTabs [data-baseweb="tab-list"] {
@@ -182,7 +234,6 @@ def _inject_styles() -> None:
             border: 1px solid #cfe0e5;
             border-radius: 12px;
             padding: 0.45rem 0.55rem;
-            
         }
 
         div[data-testid="stFileUploaderDropzone"] {
@@ -192,37 +243,12 @@ def _inject_styles() -> None:
             color: #f4fbfd !important;
         }
 
-        div[data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderDropzoneInstructions"] span {
-            color: #f4fbfd !important;
-            font-weight: 800 !important;
-        }
-
-        div[data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderDropzoneInstructions"] small {
-            color: #e7f4f8 !important;
-            font-weight: 700 !important;
-        }
-
-        div[data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderDropzoneInstructions"] a,
-        div[data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderDropzoneInstructions"] button,
-        div[data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderDropzoneInstructions"] p,
-        div[data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderDropzoneInstructions"] * {
-            color: #f4fbfd !important;
-            opacity: 1 !important;
-            font-weight: 800 !important;
-        }
-
-        /* Fallback for Streamlit versions with different uploader DOM */
         div[data-testid="stFileUploaderDropzone"] * {
             color: #f4fbfd !important;
             fill: #f4fbfd !important;
             stroke: #f4fbfd !important;
             opacity: 1 !important;
-        }
-
-        div[data-testid="stFileUploader"] p,
-        div[data-testid="stFileUploader"] span,
-        div[data-testid="stFileUploader"] label {
-            color: #f4fbfd !important;
+            font-weight: 800 !important;
         }
 
         div[data-testid="stFileUploaderFile"] {
@@ -231,32 +257,134 @@ def _inject_styles() -> None:
             border-radius: 10px !important;
         }
 
-        div[data-testid="stFileUploaderFile"] *,
-        div[data-testid="stFileUploaderFileName"],
-        div[data-testid="stFileUploaderFileData"] {
+        div[data-testid="stFileUploaderFile"] * {
             color: #101820 !important;
             font-weight: 700 !important;
         }
 
-        div[data-testid="stFileUploader"] small {
-            color: #45656d !important;
-            font-weight: 600;
-        }
-
-        /* Force high-contrast labels/help text in form controls */
         [data-testid="stWidgetLabel"] p,
-        [data-testid="stWidgetLabel"] span,
+        [data-testid="stWidgetLabel"] label,
         .stTextInput label,
         .stTextInput p,
-        .stCaption,
-        .stCaption p {
-            color: #12343b !important;
+        .stTextInput input,
+        .stTextInput input::placeholder,
+        .stTextArea textarea,
+        .stTextArea textarea::placeholder {
+            color: #102a30 !important;
+            opacity: 1 !important;
             font-weight: 700 !important;
+        }
+
+        .stTextInput input,
+        .stTextArea textarea {
+            background: #ffffff !important;
+            border: 1px solid #b9ced4 !important;
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #d7eefb 0%, #edf8ff 100%) !important;
+            border-right: 1px solid #9dc7dc !important;
+        }
+
+        [data-testid="stSidebar"] * {
+            color: #102a30 !important;
+        }
+
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] h4,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] div,
+        [data-testid="stSidebar"] li,
+        [data-testid="stSidebar"] small,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] * {
+            color: #102a30 !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+        [data-testid="stSidebar"] label {
+            font-weight: 800 !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] textarea,
+        [data-testid="stSidebar"] select {
+            background: #ffffff !important;
+            color: #102a30 !important;
+            border: 1px solid #b9ced4 !important;
+        }
+
+        [data-testid="stSidebar"] [data-baseweb="select"] *,
+        [data-testid="stSidebar"] [data-baseweb="select"] input,
+        [data-testid="stSidebar"] [data-baseweb="select"] span,
+        [data-testid="stSidebar"] [data-baseweb="select"] div {
+            color: #102a30 !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            background: #ffffff !important;
+            border: 1px solid #b9ced4 !important;
+        }
+
+        [data-testid="stSidebar"] [role="radiogroup"] label,
+        [data-testid="stSidebar"] [data-baseweb="radio"] label,
+        [data-testid="stSidebar"] [data-baseweb="radio"] span {
+            color: #102a30 !important;
+            font-weight: 700 !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stSidebar"] button,
+        [data-testid="stSidebar"] button * {
+            color: #ffffff !important;
+            font-weight: 700 !important;
+        }
+
+        /* Global button accessibility: enforce visible fill/text for all actions */
+        .stButton > button,
+        button[kind="primary"],
+        [data-testid="baseButton-secondary"],
+        [data-testid="baseButton-primary"] {
+            background: #0f4c5c !important;
+            color: #ffffff !important;
+            border: 1px solid #0c3d49 !important;
+            border-radius: 10px !important;
+            font-weight: 800 !important;
+            opacity: 1 !important;
+        }
+
+        .stButton > button:hover,
+        button[kind="primary"]:hover,
+        [data-testid="baseButton-secondary"]:hover,
+        [data-testid="baseButton-primary"]:hover {
+            background: #0c3d49 !important;
+            color: #ffffff !important;
+            border-color: #092f39 !important;
+        }
+
+        .stButton > button:disabled {
+            background: #7ea5b2 !important;
+            color: #f5fbfd !important;
+            border-color: #6f97a4 !important;
         }
 
         div[data-testid="stProgress"] p,
         div[data-testid="stProgress"] span {
-            color: #101820 !important;
+            color: #102a30 !important;
+            font-weight: 800 !important;
+            opacity: 1 !important;
+        }
+
+        div[data-testid="stSpinner"] *,
+        div[data-testid="stSpinner"] p,
+        div[data-testid="stSpinner"] span {
+            color: #102a30 !important;
             font-weight: 800 !important;
             opacity: 1 !important;
         }
@@ -266,12 +394,121 @@ def _inject_styles() -> None:
     )
 
 
+def _default_store() -> dict[str, Any]:
+    return {
+        "admin": {"serpapi_api_key": ""},
+        "users": {},
+    }
+
+
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def _load_store() -> dict[str, Any]:
+    if not DATA_STORE_PATH.exists():
+        logger.info("Store file not found, creating new")
+        return _default_store()
+
+    try:
+        content = json.loads(DATA_STORE_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        logger.error(f"Store file corrupted: {e}. Creating backup and new store.")
+        backup_path = DATA_STORE_PATH.with_suffix('.json.backup')
+        try:
+            DATA_STORE_PATH.rename(backup_path)
+            logger.info(f"Created backup at {backup_path}")
+        except Exception:
+            pass
+        return _default_store()
+    except Exception as e:
+        logger.error(f"Error loading store: {e}")
+        return _default_store()
+
+    if not isinstance(content, dict):
+        return _default_store()
+
+    content.setdefault("admin", {})
+    content["admin"].setdefault("serpapi_api_key", "")
+    content.setdefault("users", {})
+    for _, user_rec in content["users"].items():
+        if isinstance(user_rec, dict):
+            user_rec.setdefault("password_hash", "")
+            user_rec.setdefault("created_at", "")
+            user_rec.setdefault("parsed_resume", None)
+            user_rec.setdefault("extracted_text", "")
+            user_rec.setdefault("parsed_file_name", "")
+            user_rec.setdefault("last_job_title", "")
+            user_rec.setdefault("jobs_rows", [])
+            user_rec.setdefault("parsed_history", [])
+    return content
+
+
+
+def _save_store(store_data: dict[str, Any]) -> None:
+    DATA_STORE_PATH.write_text(
+        json.dumps(store_data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
 def _stringify(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, list):
         return "; ".join(str(item).strip() for item in value if str(item).strip())
     return str(value).strip()
+
+
+def _skills_list(parsed_resume: dict[str, Any] | None) -> list[str]:
+    if not parsed_resume:
+        return []
+
+    skills = parsed_resume.get("skills")
+    if isinstance(skills, list):
+        return [str(skill).strip() for skill in skills if str(skill).strip()]
+    if isinstance(skills, str):
+        raw = re.split(r"[,;|]+", skills)
+        return [item.strip() for item in raw if item.strip()]
+    return []
+
+
+def _first_experience_title(parsed_resume: dict[str, Any] | None) -> str:
+    if not parsed_resume:
+        return ""
+
+    experience = _stringify(parsed_resume.get("experience"))
+    if not experience:
+        return ""
+
+    lines = [line.strip() for line in re.split(r"\n|\|", experience) if line.strip()]
+    skip_keywords = {
+        "tasks",
+        "responsibilities",
+        "company",
+        "workplace",
+        "certificate",
+        "achievements",
+        "award",
+    }
+    for line in lines:
+        lowered = line.lower()
+        if any(keyword in lowered for keyword in skip_keywords):
+            continue
+        if re.search(r"\d{2}/\d{4}|present|\d{4}", lowered):
+            continue
+        if 2 <= len(line) <= 70:
+            return line
+
+    return ""
+
+
+def _suggest_job_title(parsed_resume: dict[str, Any] | None) -> str:
+    from_experience = _first_experience_title(parsed_resume)
+    if from_experience:
+        return from_experience
+
+    skills = _skills_list(parsed_resume)
+    return skills[0] if skills else ""
 
 
 def _field_confidence(field_name: str, field_value: Any) -> str:
@@ -288,28 +525,126 @@ def _field_confidence(field_name: str, field_value: Any) -> str:
     return "Medium"
 
 
-def _confidence_badge(level: str) -> str:
+def _confidence_tooltip(field_name: str, level: str) -> str:
+    return (
+        f"Confidence for '{field_name}'. "
+        f"{level} means extraction looked {'strong' if level == 'High' else 'usable' if level == 'Medium' else 'uncertain'} "
+        "based on formatting and pattern checks."
+    )
+
+
+def _confidence_badge(level: str, field_name: str) -> str:
     css_class = {
         "High": "badge badge-high",
         "Medium": "badge badge-medium",
         "Low": "badge badge-low",
     }.get(level, "badge badge-medium")
-    return f"<span class=\"{css_class}\">{level}</span>"
+    tooltip = html.escape(_confidence_tooltip(field_name, level), quote=True)
+    return f'<span class="{css_class}" title="{tooltip}">{level} ⓘ</span>'
+
+
+def _rank_jobs(jobs_df: pd.DataFrame, parsed_resume: dict[str, Any] | None) -> pd.DataFrame:
+    ranked_df = jobs_df.copy()
+    skills = [skill.lower() for skill in _skills_list(parsed_resume)]
+
+    rankings: list[int] = []
+    matched_skills: list[str] = []
+    rank_confidence: list[str] = []
+
+    for _, row in ranked_df.iterrows():
+        description = _stringify(row.get("description", "")).lower()
+        if not description:
+            rankings.append(0)
+            matched_skills.append("")
+            rank_confidence.append("Low")
+            continue
+
+        found = [skill for skill in skills if skill and skill in description]
+        score = len(found)
+        rankings.append(score)
+        matched_skills.append(", ".join(found[:8]))
+        if score >= 5:
+            rank_confidence.append("High")
+        elif score >= 2:
+            rank_confidence.append("Medium")
+        else:
+            rank_confidence.append("Low")
+
+    ranked_df.insert(0, "Ranking", rankings)
+    ranked_df.insert(1, "Ranking Confidence", rank_confidence)
+    ranked_df.insert(2, "Matched Skills", matched_skills)
+    ranked_df = ranked_df.sort_values(by=["Ranking", "company"], ascending=[False, True]).reset_index(drop=True)
+    return ranked_df
+
+
+def _reset_view(clear_upload: bool = True) -> None:
+    st.session_state.parsed_resume = None
+    st.session_state.extracted_text = ""
+    st.session_state.parsed_file_name = ""
+    st.session_state.jobs_df = None
+    st.session_state.job_error = ""
+    st.session_state.job_title_input = ""
+    if clear_upload:
+        st.session_state.uploader_nonce = st.session_state.get("uploader_nonce", 0) + 1
+
+
+def _load_user_into_session(username: str, store: dict[str, Any]) -> None:
+    user_data = store["users"].get(username, {})
+    st.session_state.current_user = username
+    st.session_state.parsed_resume = user_data.get("parsed_resume")
+    st.session_state.extracted_text = user_data.get("extracted_text", "")
+    st.session_state.parsed_file_name = user_data.get("parsed_file_name", "")
+    st.session_state.job_title_input = user_data.get("last_job_title", "")
+    jobs_rows = user_data.get("jobs_rows") or []
+    st.session_state.jobs_df = pd.DataFrame(jobs_rows) if jobs_rows else None
+    st.session_state.job_error = ""
+    st.session_state.selected_history_index = 0
+
+
+def _clear_access_control_inputs() -> None:
+    for key in [
+        "admin_password_input",
+        "user_auth_action",
+        "username_input",
+        "user_password_input",
+        "confirm_password_input",
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def _set_active_user_query_param(username: str) -> None:
+    st.query_params["user"] = username
+
+
+def _clear_active_user_query_param() -> None:
+    if "user" in st.query_params:
+        del st.query_params["user"]
+
+
+def _restore_active_user_from_query_param(store: dict[str, Any]) -> None:
+    if st.session_state.current_user:
+        return
+
+    query_user = st.query_params.get("user", "")
+    if not isinstance(query_user, str):
+        return
+
+    username = query_user.strip()
+    if username and username in store.get("users", {}):
+        _load_user_into_session(username, store)
 
 
 _inject_styles()
 
-st.markdown(
-    """
-    <div class="hero">
-      <h1>CV Intelligence Dashboard</h1>
-      <p>Parse resumes, inspect extracted fields, and discover matching jobs in one elegant workflow.</p>
-      <span class="pill">Thesis Demo View</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+store = _load_store()
 
+if "uploader_nonce" not in st.session_state:
+    st.session_state.uploader_nonce = 0
+if "current_user" not in st.session_state:
+    st.session_state.current_user = ""
+if "admin_ok" not in st.session_state:
+    st.session_state.admin_ok = False
 if "parsed_resume" not in st.session_state:
     st.session_state.parsed_resume = None
 if "extracted_text" not in st.session_state:
@@ -322,14 +657,247 @@ if "jobs_df" not in st.session_state:
     st.session_state.jobs_df = None
 if "job_error" not in st.session_state:
     st.session_state.job_error = ""
+if "last_mode" not in st.session_state:
+    st.session_state.last_mode = "User"
+if "selected_history_index" not in st.session_state:
+    st.session_state.selected_history_index = 0
+if "access_mode" not in st.session_state:
+    st.session_state.access_mode = "User"
+if "login_attempts" not in st.session_state:
+    st.session_state.login_attempts = {}  # {username: [(timestamp, success/fail), ...]}
+
+# Disabled automatic login from URL query param.
+# User must explicitly login from sidebar.
+# _restore_active_user_from_query_param(store)
+
+st.markdown(
+    """
+    <div class="hero">
+            <h1>Automated Job Market Scout</h1>
+            <p>We are finding the best matching jobs from your CV skillset.</p>
+      <span class="pill">Dashboard View</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.sidebar.markdown("## Access Control")
+mode = st.sidebar.radio("Mode", ["User", "Admin"], horizontal=True, key="access_mode")
+
+if st.session_state.last_mode != mode:
+    _clear_access_control_inputs()
+    has_active_session = bool(st.session_state.current_user) or bool(st.session_state.admin_ok)
+    if mode == "User" and has_active_session:
+        # Returning from admin or user view should require explicit login again.
+        st.session_state.current_user = ""
+        st.session_state.admin_ok = False
+        _clear_active_user_query_param()
+        _reset_view(clear_upload=False)
+st.session_state.last_mode = mode
+
+if mode == "Admin":
+    st.sidebar.markdown("### Admin Login")
+    admin_password = st.sidebar.text_input("Admin password", type="password", key="admin_password_input")
+    if st.sidebar.button("Login as Admin"):
+        expected_password = os.environ.get("APP_ADMIN_PASSWORD", "admin123").strip()
+        if not compare_digest(admin_password, expected_password):
+            st.session_state.admin_ok = False
+            st.sidebar.error("Invalid admin password.")
+            logger.warning("Failed admin login attempt")
+        else:
+            st.session_state.admin_ok = True
+            logger.info("Admin login successful")
+
+    if st.session_state.admin_ok:
+        st.sidebar.success("Admin session active.")
+        if st.sidebar.button("Logout Admin"):
+            st.session_state.admin_ok = False
+            st.rerun()
+
+        current_key = store["admin"].get("serpapi_api_key", "")
+        updated_key = st.sidebar.text_input("Stored SerpApi key", value=current_key, type="password")
+        if st.sidebar.button("Save API key"):
+            store["admin"]["serpapi_api_key"] = updated_key.strip()
+            _save_store(store)
+            st.sidebar.success("SerpApi key saved.")
+
+        st.sidebar.markdown("### User List")
+        user_names = sorted(store["users"].keys())
+        if user_names:
+            selected_user = st.sidebar.selectbox("Select user", user_names)
+            user_data = store["users"].get(selected_user, {})
+            st.sidebar.caption(f"Created: {user_data.get('created_at', '-')}")
+            st.sidebar.caption(
+                "Has parsed CV: "
+                + ("Yes" if bool(user_data.get("parsed_resume")) else "No")
+            )
+            delete_col1, delete_col2 = st.sidebar.columns(2)
+            if delete_col1.button("Remove user"):
+                st.session_state.confirm_delete_user = True
+            if st.session_state.get("confirm_delete_user") and delete_col2.button("✓ Confirm"):
+                del store["users"][selected_user]
+                _save_store(store)
+                st.sidebar.success(f"Removed user: {selected_user}")
+                logger.info(f"Admin deleted user: {selected_user}")
+                st.session_state.confirm_delete_user = False
+                st.rerun()
+        else:
+            st.sidebar.info("No users stored yet.")
+
+    st.info("Admin view is for key management and user control.")
+    st.stop()
+
+st.sidebar.markdown("### User Login")
+auth_action = st.sidebar.radio("User action", ["Login", "Register"], horizontal=True, key="user_auth_action")
+username_input = st.sidebar.text_input("Username", value="", key="username_input")
+user_password = st.sidebar.text_input("Password", type="password", key="user_password_input")
+confirm_password = ""
+if auth_action == "Register":
+    confirm_password = st.sidebar.text_input("Confirm password", type="password", key="confirm_password_input")
+
+def _is_username_valid(username: str) -> bool:
+    """Validate username format: 3-32 chars, alphanumeric, underscore, hyphen only."""
+    return bool(re.match(r'^[a-zA-Z0-9_-]{3,32}$', username))
+
+def _check_rate_limit(username: str, is_login: bool = True) -> tuple[bool, str]:
+    return True, ""
+
+if st.sidebar.button(auth_action):
+    username_clean = username_input.strip()
+    if not username_clean:
+        st.sidebar.error("Enter a username.")
+    elif not _is_username_valid(username_clean):
+        st.sidebar.error("Username must be 3-32 chars: letters, numbers, - or _ only.")
+    elif not user_password.strip():
+        st.sidebar.error("Enter a password.")
+    elif auth_action == "Register" and user_password != confirm_password:
+        st.sidebar.error("Passwords do not match.")
+    else:
+        allowed, msg = _check_rate_limit(username_clean, is_login=(auth_action == "Login"))
+        if not allowed:
+            st.sidebar.error(msg)
+            logger.warning(f"Rate limit exceeded for user: {username_clean}")
+        else:
+            user_rec = store["users"].get(username_clean)
+
+            if auth_action == "Register":
+                if user_rec is not None:
+                    st.sidebar.error("User already exists. Please login instead.")
+                    logger.warning(f"Registration attempt for existing user: {username_clean}")
+                else:
+                    store["users"][username_clean] = {
+                        "password_hash": _hash_password(user_password),
+                        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                        "parsed_resume": None,
+                        "extracted_text": "",
+                        "parsed_file_name": "",
+                        "last_job_title": "",
+                        "jobs_rows": [],
+                        "parsed_history": [],
+                    }
+                    _save_store(store)
+                    st.sidebar.success("Registration successful. You can now login.")
+                    logger.info(f"New user registered: {username_clean}")
+            else:
+                if user_rec is None:
+                    st.sidebar.error("User not found. Please register first.")
+                    logger.warning(f"Login attempt for non-existent user: {username_clean}")
+                else:
+                    stored_hash = user_rec.get("password_hash", "")
+                    current_hash = _hash_password(user_password)
+
+                    # Backward compatibility for old records without password hash.
+                    if not stored_hash:
+                        user_rec["password_hash"] = current_hash
+                        _save_store(store)
+                        stored_hash = current_hash
+
+                    if not compare_digest(stored_hash, current_hash):
+                        st.sidebar.error("Wrong password.")
+                        logger.warning(f"Failed login for user: {username_clean}")
+                    else:
+                        _load_user_into_session(username_clean, store)
+                        _clear_access_control_inputs()
+                        logger.info(f"User login successful: {username_clean}")
+                        st.rerun()
+
+
+def _clear_persisted_user_data(store_data: dict[str, Any], username: str) -> None:
+    user_rec = store_data.get("users", {}).get(username)
+    if not isinstance(user_rec, dict):
+        return
+
+    user_rec["parsed_resume"] = None
+    user_rec["extracted_text"] = ""
+    user_rec["parsed_file_name"] = ""
+    user_rec["last_job_title"] = ""
+    user_rec["jobs_rows"] = []
+    user_rec["parsed_history"] = []
+    _save_store(store_data)
+
+
+def _validate_parsed_resume(data: Any) -> bool:
+    """Validate that parsed_resume has required structure."""
+    if not isinstance(data, dict):
+        return False
+    required_keys = {"file_name", "full_name", "email", "skills"}
+    # Allow missing fields, just check it's a dict with at least some expected keys
+    has_at_least_one = any(k in data for k in required_keys)
+    return has_at_least_one
+
+def _load_selected_history_entry(store_data: dict[str, Any], username: str, history_index: int) -> None:
+    user_rec = store_data.get("users", {}).get(username)
+    if not isinstance(user_rec, dict):
+        logger.error(f"User record not found for: {username}")
+        return
+
+    history_items = user_rec.get("parsed_history") or []
+    if history_index < 0 or history_index >= len(history_items):
+        logger.error(f"History index {history_index} out of range for user: {username}")
+        return
+
+    selected_item = history_items[history_index]
+    parsed_resume = selected_item.get("parsed_resume")
+    if not _validate_parsed_resume(parsed_resume):
+        logger.error(f"Corrupted history entry at index {history_index} for user: {username}")
+        return
+
+    st.session_state.parsed_resume = parsed_resume
+    st.session_state.extracted_text = selected_item.get("extracted_text", "")
+    st.session_state.parsed_file_name = selected_item.get("file_name", "")
+    st.session_state.job_title_input = _suggest_job_title(parsed_resume)
+    st.session_state.jobs_df = None
+    st.session_state.job_error = ""
+
+    user_rec["parsed_resume"] = parsed_resume
+    user_rec["extracted_text"] = st.session_state.extracted_text
+    user_rec["parsed_file_name"] = st.session_state.parsed_file_name
+    user_rec["last_job_title"] = st.session_state.job_title_input
+    user_rec["jobs_rows"] = []
+    _save_store(store_data)
+
+if not st.session_state.current_user:
+    st.markdown(
+        '<div class="status-card">Login with a username from the sidebar to continue.</div>',
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
+st.sidebar.success(f"Logged in as: {st.session_state.current_user}")
+if st.sidebar.button("Logout User"):
+    st.session_state.current_user = ""
+    _clear_active_user_query_param()
+    _reset_view(clear_upload=True)
+    st.rerun()
 
 with st.container(border=True):
-    st.markdown('<div class="section-title">Upload</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Upload CV</div>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader(
         "Click to upload CV",
         type=ALLOWED_UPLOAD_TYPES,
         accept_multiple_files=False,
         label_visibility="collapsed",
+        key=f"uploader_{st.session_state.uploader_nonce}",
     )
 
     col_parse, col_reset = st.columns([1, 1])
@@ -337,12 +905,8 @@ with st.container(border=True):
     reset_clicked = col_reset.button("Reset View", use_container_width=True)
 
 if reset_clicked:
-    st.session_state.parsed_resume = None
-    st.session_state.extracted_text = ""
-    st.session_state.parsed_file_name = ""
-    st.session_state.job_title_input = ""
-    st.session_state.jobs_df = None
-    st.session_state.job_error = ""
+    _clear_persisted_user_data(store, st.session_state.current_user)
+    _reset_view(clear_upload=True)
     st.rerun()
 
 if uploaded_file is None:
@@ -360,232 +924,327 @@ else:
         )
     else:
         if parse_clicked:
-            with st.spinner("Parsing CV..."):
-                pdf_bytes = uploaded_file.read()
-                extracted_text = extract_text_from_pdf_bytes(pdf_bytes)
-                parsed_resume = extract_resume_data(extracted_text, file_name=uploaded_file.name)
-                st.session_state.parsed_resume = parsed_resume
-                st.session_state.extracted_text = extracted_text
-                st.session_state.parsed_file_name = uploaded_file.name
+            try:
+                with st.spinner("Parsing CV..."):
+                    pdf_bytes = uploaded_file.read()
+                    
+                    # Validate PDF file format
+                    if not pdf_bytes.startswith(b'%PDF'):
+                        st.error("❌ File is not a valid PDF. Please upload a PDF file.")
+                        logger.warning(f"Non-PDF file upload attempt: {uploaded_file.name}")
+                    else:
+                        extracted_text = extract_text_from_pdf_bytes(pdf_bytes)
+                        parsed_resume = extract_resume_data(extracted_text, file_name=uploaded_file.name)
+                        st.session_state.parsed_resume = parsed_resume
+                        st.session_state.extracted_text = extracted_text
+                        st.session_state.parsed_file_name = uploaded_file.name
+                        st.session_state.job_title_input = _suggest_job_title(parsed_resume)
+                        st.session_state.jobs_df = None
+                        st.session_state.job_error = ""
 
-                skills_value = parsed_resume.get("skills")
-                if isinstance(skills_value, list) and skills_value:
-                    st.session_state.job_title_input = skills_value[0]
-                elif isinstance(skills_value, str) and skills_value.strip():
-                    st.session_state.job_title_input = skills_value.split(";")[0].strip().split("|")[0].strip()
-                else:
-                    st.session_state.job_title_input = ""
-
-                st.session_state.jobs_df = None
-                st.session_state.job_error = ""
-
-        if st.session_state.parsed_resume is not None:
-            output_row = {
-                key: "; ".join(value) if isinstance(value, list) else (value or "")
-                for key, value in st.session_state.parsed_resume.items()
-            }
-            output_df = pd.DataFrame([output_row])
-
-            filled_fields = sum(1 for value in st.session_state.parsed_resume.values() if _stringify(value))
-            total_fields = len(st.session_state.parsed_resume)
-            confidence_levels = [
-                _field_confidence(key, value) for key, value in st.session_state.parsed_resume.items()
-            ]
-            confidence_points = {"High": 1.0, "Medium": 0.65, "Low": 0.25}
-            confidence_avg = round(
-                100
-                * (sum(confidence_points[level] for level in confidence_levels) / max(len(confidence_levels), 1))
-            )
-            skills_count = len(st.session_state.parsed_resume.get("skills") or [])
-
-            kpi_1, kpi_2, kpi_3, kpi_4 = st.columns(4)
-            kpi_1.markdown(
-                f'<div class="stat-card"><div class="stat-label">Fields Extracted</div><div class="stat-value">{filled_fields}/{total_fields}</div></div>',
-                unsafe_allow_html=True,
-            )
-            kpi_2.markdown(
-                f'<div class="stat-card"><div class="stat-label">Confidence Avg</div><div class="stat-value">{confidence_avg}%</div></div>',
-                unsafe_allow_html=True,
-            )
-            kpi_3.markdown(
-                f'<div class="stat-card"><div class="stat-label">Skills Found</div><div class="stat-value">{skills_count}</div></div>',
-                unsafe_allow_html=True,
-            )
-            jobs_count = 0 if st.session_state.jobs_df is None else len(st.session_state.jobs_df)
-            kpi_4.markdown(
-                f'<div class="stat-card"><div class="stat-label">Jobs Matched</div><div class="stat-value">{jobs_count}</div></div>',
-                unsafe_allow_html=True,
-            )
-
-            st.progress(min(confidence_avg, 100), text=f"Parse confidence estimate: {confidence_avg}%")
-
-            tab_overview, tab_fields, tab_text, tab_jobs = st.tabs(
-                ["Overview", "Parsed Fields", "Raw Text", "Job Match"]
-            )
-
-            with tab_overview:
-                left_col, right_col = st.columns([1.15, 1])
-                with left_col:
-                    st.markdown('<div class="section-title">Profile Snapshot</div>', unsafe_allow_html=True)
-                    highlight_keys = [
-                        "file_name",
-                        "full_name",
-                        "email",
-                        "phone",
-                        "address",
-                        "linkedin",
-                    ]
-                    for key in highlight_keys:
-                        value = _stringify(st.session_state.parsed_resume.get(key))
-                        if not value:
-                            continue
-                        st.markdown(
-                            f'<div class="field-card"><div class="field-name">{key.replace("_", " ")}</div><div class="field-value">{value}</div></div>',
-                            unsafe_allow_html=True,
+                        user_rec = store["users"][st.session_state.current_user]
+                        user_rec["parsed_resume"] = parsed_resume
+                        user_rec["extracted_text"] = extracted_text
+                        user_rec["parsed_file_name"] = uploaded_file.name
+                        user_rec["last_job_title"] = st.session_state.job_title_input
+                        user_rec["jobs_rows"] = []
+                        user_rec.setdefault("parsed_history", [])
+                        
+                        # Limit history to 50 entries
+                        MAX_HISTORY = 50
+                        if len(user_rec["parsed_history"]) >= MAX_HISTORY:
+                            user_rec["parsed_history"] = user_rec["parsed_history"][1:]
+                        
+                        user_rec["parsed_history"].append(
+                            {
+                                "parsed_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                                "file_name": uploaded_file.name,
+                                "fields_extracted": sum(1 for v in parsed_resume.values() if _stringify(v)),
+                                "parsed_resume": parsed_resume,
+                                "extracted_text": extracted_text,
+                            }
                         )
+                        _save_store(store)
+                        logger.info(f"CV parsed successfully for user: {st.session_state.current_user}")
+            except ValueError as e:
+                st.error(f"❌ Failed to parse PDF: {str(e)[:100]}")
+                logger.error(f"PDF parsing error for user {st.session_state.current_user}: {e}")
+            except Exception as e:
+                st.error(f"❌ Unexpected error while parsing PDF: {str(e)[:100]}")
+                logger.error(f"Unexpected error parsing PDF: {e}", exc_info=True)
 
-                with right_col:
-                    st.markdown('<div class="section-title">Section Coverage</div>', unsafe_allow_html=True)
-                    section_values = {
-                        "education": len(_stringify(st.session_state.parsed_resume.get("education"))),
-                        "experience": len(_stringify(st.session_state.parsed_resume.get("experience"))),
-                        "skills": len(_stringify(st.session_state.parsed_resume.get("skills"))),
-                        "address": len(_stringify(st.session_state.parsed_resume.get("address"))),
-                    }
-                    coverage_df = pd.DataFrame(
-                        {
-                            "section": list(section_values.keys()),
-                            "length": list(section_values.values()),
-                        }
-                    ).set_index("section")
-                    st.bar_chart(coverage_df)
+if st.session_state.parsed_resume is not None:
+    output_row = {
+        key: "; ".join(value) if isinstance(value, list) else (value or "")
+        for key, value in st.session_state.parsed_resume.items()
+    }
+    output_df = pd.DataFrame([output_row])
 
-                    st.caption(
-                        "Coverage bars show extracted content length per section. Higher values usually indicate richer extraction."
-                    )
+    filled_fields = sum(1 for value in st.session_state.parsed_resume.values() if _stringify(value))
+    total_fields = len(st.session_state.parsed_resume)
+    confidence_levels = [
+        _field_confidence(key, value) for key, value in st.session_state.parsed_resume.items()
+    ]
+    confidence_points = {"High": 1.0, "Medium": 0.65, "Low": 0.25}
+    confidence_avg = round(
+        100 * (sum(confidence_points[level] for level in confidence_levels) / max(len(confidence_levels), 1))
+    )
+    skills_count = len(_skills_list(st.session_state.parsed_resume))
 
-            with tab_fields:
-                st.markdown('<div class="section-title">Extracted Fields</div>', unsafe_allow_html=True)
-                field_rows = []
-                for key, value in st.session_state.parsed_resume.items():
-                    text_value = _stringify(value)
-                    confidence = _field_confidence(key, value)
-                    field_rows.append(
-                        {
-                            "Field": key,
-                            "Value": text_value,
-                            "Confidence": confidence,
-                        }
-                    )
+    kpi_1, kpi_2, kpi_3, kpi_4 = st.columns(4)
+    kpi_1.markdown(
+        f'<div class="stat-card"><div class="stat-label">Fields Extracted</div><div class="stat-value">{filled_fields}/{total_fields}</div></div>',
+        unsafe_allow_html=True,
+    )
+    kpi_2.markdown(
+        f'<div class="stat-card"><div class="stat-label">Confidence Avg</div><div class="stat-value">{confidence_avg}%</div></div>',
+        unsafe_allow_html=True,
+    )
+    kpi_3.markdown(
+        f'<div class="stat-card"><div class="stat-label">Skills Found</div><div class="stat-value">{skills_count}</div></div>',
+        unsafe_allow_html=True,
+    )
+    jobs_count = 0 if st.session_state.jobs_df is None else len(st.session_state.jobs_df)
+    kpi_4.markdown(
+        f'<div class="stat-card"><div class="stat-label">Jobs Matched</div><div class="stat-value">{jobs_count}</div></div>',
+        unsafe_allow_html=True,
+    )
 
-                field_df = pd.DataFrame(field_rows)
-                st.dataframe(field_df, use_container_width=True, hide_index=True)
+    st.progress(min(confidence_avg, 100), text=f"Parse confidence estimate: {confidence_avg}%")
 
-                for _, row in field_df.iterrows():
-                    value_preview = row["Value"] if row["Value"] else "Not detected"
-                    badge = _confidence_badge(str(row["Confidence"]))
-                    st.markdown(
-                        (
-                            f'<div class="field-card"><div class="field-name">{row["Field"]}{badge}</div>'
-                            f'<div class="field-value">{value_preview}</div></div>'
-                        ),
-                        unsafe_allow_html=True,
-                    )
+    tab_overview, tab_fields, tab_text, tab_jobs = st.tabs(
+        ["Overview", "Parsed Fields", "Raw Text", "Job Match"]
+    )
 
-                csv_buffer = io.StringIO()
-                output_df.to_csv(csv_buffer, index=False)
-                st.download_button(
-                    "Download Parsed CSV",
-                    data=csv_buffer.getvalue(),
-                    file_name=DEFAULT_OUTPUT_FILENAME,
-                    mime="text/csv",
-                )
-
-            with tab_text:
-                st.markdown('<div class="section-title">Extracted PDF Text</div>', unsafe_allow_html=True)
-                if st.session_state.extracted_text.strip():
-                    st.text_area(
-                        "Extracted PDF Text",
-                        st.session_state.extracted_text,
-                        height=420,
-                        label_visibility="collapsed",
-                    )
-                else:
-                    st.warning("No extractable text was found in this PDF.")
-
-            with tab_jobs:
-                st.markdown('<div class="section-title">Find Matching Job</div>', unsafe_allow_html=True)
+    with tab_overview:
+        left_col, right_col = st.columns([1.15, 1])
+        with left_col:
+            st.markdown('<div class="section-title">Profile Snapshot</div>', unsafe_allow_html=True)
+            highlight_keys = [
+                "file_name",
+                "full_name",
+                "email",
+                "phone",
+                "address",
+                "linkedin",
+            ]
+            for key in highlight_keys:
+                value = _stringify(st.session_state.parsed_resume.get(key))
+                if not value:
+                    continue
                 st.markdown(
-                    '<div class="helper-note">Suggested title comes from resume skills. You can edit it before searching.</div>',
+                    f'<div class="field-card"><div class="field-name">{key.replace("_", " ")}</div><div class="field-value">{value}</div></div>',
                     unsafe_allow_html=True,
                 )
 
-                form_left, form_right = st.columns(2)
-                with form_left:
-                    job_title = st.text_input("Job title", key="job_title_input")
-                    country_code = (
-                        st.text_input("Country code", value="us", max_chars=2).lower().strip() or "us"
-                    )
-                with form_right:
-                    serpapi_key = st.text_input(
-                        "SerpApi API key",
-                        value=os.environ.get("SERPAPI_API_KEY", ""),
-                        type="password",
-                        help="Used to run SimpleJobHunter search from this app.",
-                    ).strip()
+        with right_col:
+            st.markdown('<div class="section-title">Section Coverage</div>', unsafe_allow_html=True)
+            section_values = {
+                "education": len(_stringify(st.session_state.parsed_resume.get("education"))),
+                "experience": len(_stringify(st.session_state.parsed_resume.get("experience"))),
+                "skills": len(_stringify(st.session_state.parsed_resume.get("skills"))),
+                "address": len(_stringify(st.session_state.parsed_resume.get("address"))),
+            }
+            coverage_df = pd.DataFrame(
+                {
+                    "section": list(section_values.keys()),
+                    "length": list(section_values.values()),
+                }
+            ).set_index("section")
+            st.bar_chart(coverage_df)
+            st.markdown(
+                '<div class="coverage-note">Coverage bars show extracted content length per section. Higher values usually indicate richer extraction.</div>',
+                unsafe_allow_html=True,
+            )
 
-                find_clicked = st.button("Find Matching Job", type="primary", use_container_width=True)
-
-                if find_clicked:
-                    if not JOB_HUNTER_AVAILABLE:
-                        st.session_state.job_error = (
-                            "Job search dependencies are missing. Install: pip install google-search-results ipython"
-                        )
-                        st.session_state.jobs_df = None
-                    elif not job_title:
-                        st.session_state.job_error = "Please enter a job title before searching."
-                        st.session_state.jobs_df = None
-                    elif not serpapi_key:
-                        st.session_state.job_error = "Please provide your SerpApi API key."
-                        st.session_state.jobs_df = None
-                    else:
-                        with st.spinner("Searching matching jobs..."):
-                            jobs_df, raw_results = search_google_jobs(
-                                job_title=job_title,
-                                limit=10,
-                                country=country_code,
-                                language="en",
-                                api_key=serpapi_key,
-                            )
-
-                        if jobs_df.empty:
-                            if isinstance(raw_results, dict) and raw_results.get("error"):
-                                st.session_state.job_error = f"SerpApi error: {raw_results.get('error')}"
-                            else:
-                                st.session_state.job_error = "No jobs found for that title/location."
-                            st.session_state.jobs_df = None
+            st.markdown('<div class="section-title">Parsed CV History</div>', unsafe_allow_html=True)
+            current_user_data = store.get("users", {}).get(st.session_state.current_user, {})
+            parsed_history = current_user_data.get("parsed_history") or []
+            if parsed_history:
+                history_options = []
+                for item in parsed_history:
+                    try:
+                        parsed_at = item.get('parsed_at', '-')
+                        file_name = item.get('file_name', 'unknown')
+                        # Convert ISO format to human-friendly time
+                        if parsed_at != '-':
+                            dt = datetime.fromisoformat(parsed_at.replace('Z', '+00:00'))
+                            friendly_time = dt.strftime("%b %d, %I:%M %p")
                         else:
-                            st.session_state.job_error = ""
-                            st.session_state.jobs_df = jobs_df
+                            friendly_time = parsed_at
+                        history_options.append(f"{friendly_time} | {file_name}")
+                    except Exception as e:
+                        logger.warning(f"Error formatting history item: {e}")
+                        history_options.append(f"{item.get('parsed_at', '-')} | {item.get('file_name', 'unknown')}")
+                
+                st.session_state.selected_history_index = st.selectbox(
+                    "Choose a previously parsed CV",
+                    list(range(len(history_options))),
+                    format_func=lambda idx: history_options[idx],
+                    index=min(st.session_state.selected_history_index, len(history_options) - 1),
+                )
+                if st.button("Select CV", use_container_width=True):
+                    _load_selected_history_entry(store, st.session_state.current_user, st.session_state.selected_history_index)
+                    st.rerun()
+                st.caption(f"Saved parsed CVs: {len(parsed_history)}")
+            else:
+                st.info("No previously parsed CVs yet.")
 
-                if st.session_state.job_error:
-                    st.error(st.session_state.job_error)
-                elif st.session_state.jobs_df is not None:
-                    st.markdown(
-                        (
-                            f'<div class="status-card">Found {len(st.session_state.jobs_df)} '
-                            "matching jobs.</div>"
-                        ),
-                        unsafe_allow_html=True,
-                    )
-                    st.dataframe(st.session_state.jobs_df, use_container_width=True)
+    with tab_fields:
+        st.markdown('<div class="section-title">Extracted Fields</div>', unsafe_allow_html=True)
 
-                    jobs_csv = io.StringIO()
-                    st.session_state.jobs_df.to_csv(jobs_csv, index=False)
-                    csv_filename = f"{st.session_state.job_title_input.lower().replace(' ', '_')}_jobs.csv"
-                    st.download_button(
-                        "Download Matching Jobs CSV",
-                        data=jobs_csv.getvalue(),
-                        file_name=csv_filename,
-                        mime="text/csv",
-                    )
+        field_rows = []
+        for key, value in st.session_state.parsed_resume.items():
+            text_value = _stringify(value)
+            confidence = _field_confidence(key, value)
+            field_rows.append(
+                {
+                    "Field": key,
+                    "Value": text_value,
+                    "Confidence": confidence,
+                    "Confidence Info": _confidence_tooltip(key, confidence),
+                }
+            )
+
+        field_df = pd.DataFrame(field_rows)
+        st.dataframe(field_df, use_container_width=True, hide_index=True)
+
+        for _, row in field_df.iterrows():
+            value_preview = row["Value"] if row["Value"] else "Not detected"
+            badge = _confidence_badge(str(row["Confidence"]), str(row["Field"]))
+            st.markdown(
+                (
+                    f'<div class="field-card"><div class="field-name">{row["Field"]}{badge}</div>'
+                    f'<div class="field-value">{value_preview}</div></div>'
+                ),
+                unsafe_allow_html=True,
+            )
+
+        csv_buffer = io.StringIO()
+        output_df.to_csv(csv_buffer, index=False)
+        st.download_button(
+            "Download Parsed CSV",
+            data=csv_buffer.getvalue(),
+            file_name=DEFAULT_OUTPUT_FILENAME,
+            mime="text/csv",
+        )
+
+    with tab_text:
+        st.markdown('<div class="section-title">Extracted PDF Text</div>', unsafe_allow_html=True)
+        if st.session_state.extracted_text.strip():
+            st.text_area(
+                "Extracted PDF Text",
+                st.session_state.extracted_text,
+                height=420,
+                label_visibility="collapsed",
+            )
+        else:
+            st.warning("No extractable text was found in this PDF.")
+
+    with tab_jobs:
+        st.markdown('<div class="section-title">Find Matching Job</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="helper-note">Suggested job title uses first experience title, then skills if needed.</div>',
+            unsafe_allow_html=True,
+        )
+
+        form_left, form_right = st.columns(2)
+        with form_left:
+            job_title = st.text_input("Job title", key="job_title_input")
+            country_code = (
+                st.text_input("Country code", value="us", max_chars=2).lower().strip() or "us"
+            )
+        with form_right:
+            saved_api_key = store.get("admin", {}).get("serpapi_api_key", "")
+            if saved_api_key:
+                st.markdown('<div class="status-card">Using SerpApi key from admin settings.</div>', unsafe_allow_html=True)
+            else:
+                st.warning("Admin has not saved a SerpApi key yet.")
+
+        find_clicked = st.button("Find Matching Job", type="primary", use_container_width=True)
+
+        if find_clicked:
+            if not JOB_HUNTER_AVAILABLE:
+                st.session_state.job_error = (
+                    "Job search dependencies are missing. Install: pip install google-search-results ipython"
+                )
+                st.session_state.jobs_df = None
+            elif not job_title:
+                st.session_state.job_error = "Please enter a job title before searching."
+                st.session_state.jobs_df = None
+            elif not saved_api_key:
+                st.session_state.job_error = "Admin must save a SerpApi key first."
+                st.session_state.jobs_df = None
+            else:
+                try:
+                    with st.spinner("Searching matching jobs..."):
+                        jobs_df, raw_results = search_google_jobs(
+                            job_title=job_title,
+                            limit=10,
+                            country=country_code,
+                            language="en",
+                            api_key=saved_api_key,
+                        )
+
+                    if jobs_df.empty:
+                        if isinstance(raw_results, dict) and raw_results.get("error"):
+                            error_msg = raw_results.get('error')
+                            if "API" in error_msg or "key" in error_msg.lower():
+                                st.error(f"❌ SerpAPI Error (invalid key?): {error_msg}\nPlease ask admin to update the API key.")
+                            else:
+                                st.session_state.job_error = f"SerpApi error: {error_msg}"
+                        else:
+                            st.session_state.job_error = "No jobs found for that title/location."
+                        st.session_state.jobs_df = None
+                        logger.warning(f"Job search returned no results for: {job_title}")
+                    else:
+                        ranked = _rank_jobs(jobs_df, st.session_state.parsed_resume)
+                        st.session_state.job_error = ""
+                        st.session_state.jobs_df = ranked
+
+                        user_rec = store["users"][st.session_state.current_user]
+                        user_rec["last_job_title"] = job_title
+                        user_rec["jobs_rows"] = ranked.to_dict(orient="records")
+                        _save_store(store)
+                        logger.info(f"Found {len(ranked)} jobs for user {st.session_state.current_user}")
+                except Exception as e:
+                    st.error(f"❌ Job search failed: {str(e)[:100]}")
+                    logger.error(f"Job search error: {e}", exc_info=True)
+                    st.session_state.jobs_df = None
+
+        if st.session_state.job_error:
+            st.error(st.session_state.job_error)
+        elif st.session_state.jobs_df is not None:
+            st.markdown(
+                (
+                    f'<div class="status-card">Found {len(st.session_state.jobs_df)} matching jobs. '
+                    "Sorted by ranking (highest first).</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+            top_job = st.session_state.jobs_df.iloc[0]
+            st.markdown(
+                (
+                    '<div class="best-job">'
+                    '<h4>Best Matching Job</h4>'
+                    f"<div><strong>{html.escape(_stringify(top_job.get('job_title')))}</strong>"
+                    f" at {html.escape(_stringify(top_job.get('company')))}</div>"
+                    f"<div>Ranking: {int(top_job.get('Ranking', 0))}</div>"
+                    f"<div>Matched skills: {html.escape(_stringify(top_job.get('Matched Skills')) or '-')}</div>"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+            st.dataframe(st.session_state.jobs_df, use_container_width=True)
+
+            jobs_csv = io.StringIO()
+            st.session_state.jobs_df.to_csv(jobs_csv, index=False)
+            csv_filename = f"{st.session_state.job_title_input.lower().replace(' ', '_')}_jobs.csv"
+            st.download_button(
+                "Download Matching Jobs CSV",
+                data=jobs_csv.getvalue(),
+                file_name=csv_filename,
+                mime="text/csv",
+            )

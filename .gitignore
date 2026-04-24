@@ -1,2 +1,8 @@
 __pycache__/
 *.py[cod]
+.venv/
+__pycache__/
+*.pyc
+app.log
+dashboard_store.json
+*.backup
