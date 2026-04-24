@@ -1,65 +1,421 @@
-# PDF + CSV Reader & Job Hunter
+\# PDF + CSV Reader & Automated Job Market Scout
 
-This repository contains two main scripts that work together to parse resumes and search jobs:
+This repository contains a Python-based CV parsing and job matching project.
 
-- `read_pdf_csv.py` — reads a structured CSV, extracts text from a PDF, and includes a built-in resume parser using `pdfplumber`.
-- `SimpleJobHunter.py` — searches Google Jobs (via SerpApi) and can optionally use the resume parser to auto-suggest a job title.
+The project started as a PDF + CSV reader and job hunter, and it has now been extended into a Streamlit dashboard called **Automated Job Market Scout**.
+
+The application can parse a CV, extract structured resume fields, let users manage their parsed CVs, and search for jobs that best match the user's skillset.
+
+Main workflow:
+
+> Upload CV → Parse resume data → Suggest job title → Search jobs → Rank best matches
+
+---
+
+## Main Scripts
+
+This project contains three main Python files:
+
+- `app.py` — Streamlit dashboard for user/admin login, CV upload, resume parsing, job matching, ranking, and visualization.
+- `read_pdf_csv.py` — reads CSV files, extracts PDF text, and includes the built-in resume parser using `pdfplumber`.
+- `SimpleJobHunter.py` — searches Google Jobs through SerpApi and returns job results that can be ranked inside the dashboard.
+
+---
 
 ## Requirements
 
-- Python 3.8+
-- Install runtime dependencies:
-  - For resume parsing / CSV/JSON export:
-    ```
-    python -m pip install pdfplumber pandas
-    ```
-  - For job search:
-    ```
-    python -m pip install google-search-results pandas ipython
-    ```
+Recommended Python version:
 
-## What changed / new integration
+```text
+Python 3.8+
+```
 
-- `SimpleJobHunter.py` now optionally imports the parser helpers from `read_pdf_csv.py`:
-  - `extract_text_from_pdf_bytes`, `extract_resume_data`, and `discover_file` are used when available.
-- Auto-discovery of a PDF:
-  - When the parser is available, `SimpleJobHunter.py` will auto-discover the first `.pdf` in the script folder and attempt to parse it.
-  - If no PDF is found, the script falls back to prompting you for a path.
-- Job-title suggestion from resume:
-  - The parser extracts `skills` from the resume and the first skill is suggested as a job title. You can accept the suggestion by pressing Enter or type a different title.
-- `read_pdf_csv.py` supports writing parsed resume output as CSV (default) or JSON via `--resume-output`.
+Install runtime dependencies:
 
-## Code structure
+```powershell
+python -m pip install streamlit pandas pdfplumber google-search-results ipython
+```
 
-- `read_csv_file(csv_path)`
-	- Validates CSV path and extension
-	- Validates header columns
-	- Returns parsed row data
-- `read_pdf_file(pdf_path)`
-	- Validates PDF path and extension
-	- Extracts text from each page
-- `main()`
-	- Calls both CSV and PDF functions
-	- Prints output to console
-	- Handles common errors
+If you are using a virtual environment, activate it first.
 
-## Error handling included
+Example on Windows PowerShell:
 
-- Missing files (`FileNotFoundError`)
-- Invalid file format (`.csv` / `.pdf` checks)
-- CSV format issues (empty/missing header, wrong columns)
-- PDF read failures
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
-## Sample test files added
+---
 
-- `sample_data.csv`
-- `sample_document.pdf`
+## Project Structure
 
-The PDF sample contains the same people data as the CSV sample.
+| File | Purpose |
+|---|---|
+| `app.py` | Main Streamlit dashboard. Handles user/admin flow, CV upload, parsing, job matching, ranking, and UI. |
+| `read_pdf_csv.py` | Handles CSV reading, PDF text extraction, two-column CV extraction, and resume parsing. |
+| `SimpleJobHunter.py` | Searches Google Jobs using SerpApi. |
+| `config.py` | Stores basic app configuration such as upload types, page title, and output filename. |
+| `sample_data.csv` | Sample CSV file used for testing. |
+| `README.md` | Project documentation. |
 
-## Run from command line
+Runtime/generated files such as `.venv`, `__pycache__`, `app.log`, and `dashboard_store.json` should not be committed.
 
-### Default sample run (short command)
+Recommended `.gitignore` entries:
+
+```gitignore
+.venv/
+__pycache__/
+*.pyc
+app.log
+dashboard_store.json
+*.backup
+```
+
+---
+
+## What Changed / New Integration
+
+The project has been improved from a simple command-line PDF/job search tool into a full dashboard application.
+
+### Main new updates
+
+- Added a Streamlit dashboard named **Automated Job Market Scout**.
+- Added user registration and login.
+- Added admin login.
+- Admin can store the SerpApi key once.
+- Users do not need to enter or see the SerpApi key.
+- Users can upload and parse PDF CVs.
+- Parsed CV information is stored locally for the logged-in user.
+- Users can choose between previously parsed CVs.
+- Reset View clears the current user's saved CV data.
+- Job results are ranked by skill matching.
+- Ranking is shown as the first column in the job table.
+- The highest ranking job is shown separately as the **Best Matching Job** card.
+- UI was redesigned with dashboard layout, KPI cards, tabs, confidence indicators, and better contrast.
+
+---
+
+## Latest Updates
+
+This project was improved in four main areas:
+
+1. Resume parser quality
+2. Job matching integration
+3. Streamlit dashboard design
+4. User/admin control
+
+---
+
+## 1. Resume Parser Improvements (`read_pdf_csv.py`)
+
+### Better PDF extraction
+
+The parser uses `pdfplumber` to extract text from PDF files and supports more advanced CV layouts.
+
+### Better two-column extraction
+
+Many modern CVs use two-column layouts. Normal PDF extraction can mix the left and right columns together.
+
+To improve this, the parser now:
+
+- detects large horizontal gaps between words,
+- checks gaps inside the same row,
+- separates left and right column text,
+- rebuilds extracted text in a better reading order,
+- uses fallback logic if the layout is not clearly two-column.
+
+This helps with modern CV templates.
+
+### Better name extraction
+
+The parser was improved so it does not accidentally select skill phrases or language-level phrases as the candidate name.
+
+For example, phrases like these should not become the full name:
+
+- `Time management`
+- `Full Professional Proficiency`
+- `Communication`
+
+### Better section extraction
+
+The parser includes improved logic for common CV sections such as:
+
+- education
+- experience
+- skills
+- contact details
+
+It also handles different heading styles more reliably.
+
+---
+
+## 2. Streamlit Dashboard (`app.py`)
+
+The project now includes a full Python UI built with Streamlit.
+
+### Current UI capabilities
+
+- Upload and parse a single PDF CV
+- View extracted raw text
+- View parsed structured fields
+- View confidence estimate
+- View section coverage chart
+- Download parsed data as CSV
+- Search matching jobs via SerpApi
+- Rank job results by skill match
+- Display best matching job separately
+- Download matching jobs as CSV
+- Register/login as user
+- Login as admin
+- Store SerpApi key in admin view
+- View and remove users from admin view
+- Select previously parsed CVs
+- Reset saved CV data
+
+---
+
+## 3. User Dashboard
+
+The user mode allows a normal user to work with their own CV data.
+
+### User can:
+
+- register with username and password,
+- login,
+- upload a PDF CV,
+- parse the CV,
+- view parsed fields,
+- view raw PDF text,
+- search matching jobs,
+- select previously parsed CVs,
+- reset saved CV data,
+- download parsed CSV,
+- download matching jobs CSV.
+
+After login, the user gets access to the dashboard.
+
+If the user is not logged in, the app shows:
+
+```text
+Login with a username from the sidebar to continue.
+```
+
+---
+
+## 4. Admin Dashboard
+
+The admin mode is used to manage the application.
+
+### Admin can:
+
+- login as admin,
+- store the SerpApi key,
+- view registered users,
+- remove users.
+
+The SerpApi key is only entered in the admin view.  
+Normal users do not need to provide the key.
+
+Default admin password:
+
+```text
+admin123
+```
+
+You can also set another admin password before running the app:
+
+```powershell
+$env:APP_ADMIN_PASSWORD = "your-password"
+```
+
+If no environment variable is set, the app uses the default password:
+
+```text
+admin123
+```
+
+---
+
+## 5. Job Matching and Ranking
+
+The job search is handled through `SimpleJobHunter.py` and used inside `app.py`.
+
+### How job matching works
+
+1. User uploads and parses a CV.
+2. The app suggests a job title from the user's experience or skills.
+3. User can edit the suggested job title.
+4. User enters a country code.
+5. App searches Google Jobs through SerpApi.
+6. Results are ranked by comparing CV skills with job descriptions.
+7. Highest ranking jobs appear first.
+8. Best result is displayed separately.
+
+### Job table includes:
+
+- `Ranking`
+- `Ranking Confidence`
+- `Matched Skills`
+- job title
+- company
+- location
+- description
+- apply link if available
+
+The **Ranking** column is the first column because the best jobs should be shown first.
+
+---
+
+## 6. Best Matching Job Card
+
+After job search, the highest-ranked job is displayed separately in a card.
+
+This card shows:
+
+- job title,
+- company,
+- ranking score,
+- matched skills.
+
+This makes the best result easier to see during a thesis demo.
+
+---
+
+## 7. Confidence Indicators
+
+The dashboard includes confidence indicators for extracted fields.
+
+Each parsed field has a confidence level:
+
+- High
+- Medium
+- Low
+
+This helps explain how reliable each extracted value is.
+
+The app also shows an overall parse confidence estimate.
+
+---
+
+## 8. CV History / CV Selector
+
+When a user parses CVs, the app stores them locally for that user.
+
+The user can choose a previously parsed CV from a selector and load it again.
+
+This is useful when the user has uploaded more than one CV.
+
+The **Reset View** button clears the current user's saved CV data and history.
+
+---
+
+## 9. Local Data Storage
+
+The app stores local dashboard data in:
+
+```text
+dashboard_store.json
+```
+
+This file is created automatically when:
+
+- a user registers,
+- a CV is parsed,
+- job results are saved,
+- admin stores the SerpApi key.
+
+It may contain:
+
+- usernames,
+- password hashes,
+- parsed CV data,
+- saved job results,
+- SerpApi key.
+
+Because of this, `dashboard_store.json` should not be pushed to GitHub or GitLab.
+
+---
+
+## Run from Streamlit UI
+
+Go to the project folder:
+
+```powershell
+cd C:\Users\Raul\Desktop\thesis\thesis
+```
+
+Run the app:
+
+```powershell
+C:\Users\Raul\Desktop\thesis\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+If Streamlit is available globally, you can also run:
+
+```powershell
+streamlit run app.py
+```
+
+Then open the local URL shown in the terminal, usually:
+
+```text
+http://localhost:8501
+```
+
+---
+
+## How to Use the Streamlit App
+
+### 1. Admin setup
+
+1. Open the app.
+2. Select **Admin** from the sidebar.
+3. Login using the admin password.
+4. Paste your SerpApi key.
+5. Click **Save API key**.
+6. Logout from admin mode.
+
+### 2. User registration
+
+1. Select **User** from the sidebar.
+2. Choose **Register**.
+3. Enter username.
+4. Enter password and confirm it.
+5. Click **Register**.
+
+### 3. User login
+
+1. Choose **Login**.
+2. Enter username and password.
+3. Click **Login**.
+
+### 4. Parse CV
+
+1. Upload a PDF CV.
+2. Click **Parse CV**.
+3. Check the extracted fields.
+4. Review raw extracted text if needed.
+5. Download parsed CSV if needed.
+
+### 5. Search matching jobs
+
+1. Open the **Job Match** tab.
+2. Check or edit the suggested job title.
+3. Enter country code, for example:
+   - `us`
+   - `hu`
+   - `tr`
+4. Click **Find Matching Job**.
+5. Review the best matching job card.
+6. Review the ranked job table.
+7. Download matching jobs CSV if needed.
+
+---
+
+## Command Line Usage
+
+The project can still be used from the command line.
+
+### Default sample run
 
 ```powershell
 python .\read_pdf_csv.py
@@ -73,26 +429,25 @@ python .\read_pdf_csv.py .\your_file.pdf .\your_file.csv
 
 ### Integrated resume parsing from main script
 
-This runs the standard CSV+PDF reader and also executes built-in CVPlumber parsing from inside `read_pdf_csv.py`.
+This runs the standard CSV/PDF reader and also executes built-in CV parsing from inside `read_pdf_csv.py`.
 
 ```powershell
 python .\read_pdf_csv.py ".\Raul's Resume.pdf" .\sample_data.csv --parse-resume --resume-output .\parsed_resumes_from_main.csv
 ```
 
-### If pdfplumber is missing
+### Parse and write JSON
 
 ```powershell
-python -m pip install pdfplumber
+python .\read_pdf_csv.py ".\Raul's Resume.pdf" .\sample_data.csv --parse-resume --resume-output .\parsed_resumes.json
 ```
 
-## Job Search Script (SerpApi)
+---
+
+## Job Search Script (`SimpleJobHunter.py`)
 
 `SimpleJobHunter.py` searches Google Jobs using SerpApi and exports results to CSV.
 
-- Prompts for SerpApi API key
-- Prompts for job title and country code
-- Fetches Google Jobs listings
-- Saves output as `<job_title>_jobs.csv`
+It can be used separately from the Streamlit UI.
 
 ### Run JobHunter
 
@@ -100,144 +455,68 @@ python -m pip install pdfplumber
 python .\SimpleJobHunter.py
 ```
 
-### Install dependencies for JobHunter
+The script asks for:
 
-```powershell
-python -m pip install google-search-results pandas ipython
+- SerpApi API key,
+- job title,
+- country code.
+
+It then saves output as:
+
+```text
+<job_title>_jobs.csv
 ```
 
-## Usage
+---
 
-1) Parse a single resume and write CSV (default):
+## SerpApi Key Options
 
-PowerShell
+Inside the Streamlit app, the SerpApi key is stored from the admin dashboard.
 
-```powershell
-python "C:\Users\excfnr\Desktop\thesis\read_pdf_csv.py" --parse-resume
-```
+For command-line usage, the script may prompt for the key. You can also set it in your session.
 
-- This will auto-discover a `.pdf` in the script folder (if you omit the `pdf_path` arg) and write `parsed_resumes.csv` by default.
+PowerShell temporary session:
 
-2) Parse and write JSON:
-
-```powershell
-python "C:\Users\excfnr\Desktop\thesis\read_pdf_csv.py" --parse-resume --resume-output "parsed_resumes.json"
-```
-
-3) Run the job search and use resume auto-suggestion (interactive):
-
-- Ensure `read_pdf_csv.py` and `SimpleJobHunter.py` are in the same folder.
-- Run:
-
-```powershell
-python "C:\Users\excfnr\Desktop\thesis\SimpleJobHunter.py"
-```
-
-- Prompts you will see:
-  - Enter your SerpApi API key (hidden)
-  - If a resume PDF exists in the script folder the script will print the found file and attempt parsing automatically. Otherwise you will be prompted:
-    Path to resume PDF to auto-suggest job title (leave blank to skip):
-  - Enter or accept the suggested job title
-  - Enter country code (default: `us`)
-
-- Results are displayed and saved as `<job_title>_jobs.csv` in the script folder.
-
-## SerpApi key options
-
-- The script prompts for the SerpApi key at runtime. You can also set it in your session to avoid typing it:
-
-PowerShell (temporary for session):
 ```powershell
 $env:SERPAPI_API_KEY = "YOUR_KEY"
 ```
 
-Or set it permanently:
+Permanent user environment variable:
+
 ```powershell
 [Environment]::SetEnvironmentVariable("SERPAPI_API_KEY","YOUR_KEY","User")
 ```
 
-## Notes and suggestions
+---
 
-- Keep both scripts in the same folder so `SimpleJobHunter.py` can import the parser helpers from `read_pdf_csv.py`.
-- `read_pdf_csv.py` is conservative by default: resume parsing and file writes only occur when `--parse-resume` is provided. `SimpleJobHunter.py` uses the parser only to suggest job titles and does not write parsed files unless you call `read_pdf_csv.py` directly.
-- If you want improvements (batch parsing, mapping skills to cleaner job titles, or saving parsed resumes from the job-hunter run), open an issue or request the change and it can be added.
+## Error Handling Included
 
-## License
+The project includes handling for common issues such as:
 
-This repository contains sample code for personal use. No license file is included.
+- missing files,
+- invalid file format,
+- invalid PDF files,
+- CSV format issues,
+- empty extracted text,
+- missing SerpApi key,
+- no job results returned,
+- unavailable job search dependencies.
 
-## Python UI (CV Upload + Output)
+---
 
-The project now also includes a simple Python UI built with Streamlit.
+## Sample Test Files
 
-## Latest Updates (April 2026)
+The project includes sample files such as:
 
-This project was improved in three main areas: parser quality, job matching integration, and UI/UX design.
+- `sample_data.csv`
+- sample PDF files if available in the folder
 
-### 1) Resume parser improvements (`read_pdf_csv.py`)
+These can be used for testing the parser and command-line behavior.
 
-- Better two-column extraction:
-  - Added smart page extraction that detects column split points based on the largest horizontal gap.
-  - Improved this further with row-level gap detection and median split fallback for more stable left/right ordering.
-- Better name extraction:
-  - Added stronger filters so non-name phrases (for example skill labels or language proficiency phrases) are not selected as `full_name`.
-- Better section extraction:
-  - Normalized heading matching and stop-heading detection.
-  - Expanded aliases so sections like volunteered work experience are captured more reliably.
+---
 
-### 2) Job Hunter integration improvements (`SimpleJobHunter.py` + `app.py`)
+## Project Summary
 
-- Refactored `SimpleJobHunter.py` to be import-safe for Streamlit:
-  - Interactive CLI flow now runs only under `if __name__ == "__main__":`.
-  - `search_google_jobs(...)` now accepts an explicit `api_key` argument.
-- Streamlit app now includes a **Find Matching Job** flow:
-  - Suggests a job title from parsed resume skills.
-  - Lets user edit title, choose country code, provide SerpApi key.
-  - Runs search and shows jobs in-app.
-  - Supports downloading matching jobs as CSV.
+Automated Job Market Scout combines CV parsing, dashboard visualization, user/admin management, and ranked job matching in one workflow.
 
-### 3) Streamlit visual redesign and accessibility (`app.py`)
-
-- Reworked layout into a dashboard style:
-  - Hero header
-  - KPI cards
-  - Progress indicator
-  - Tabs: Overview, Parsed Fields, Raw Text, Job Match
-- Added cleaner parsed-field presentation with confidence badges.
-- Added section coverage chart for quick visual review.
-- Improved readability/contrast for key UI text (tabs, status blocks, labels, uploader area).
-
-## Current UI Capabilities
-
-- Upload and parse a single PDF CV
-- View extracted raw text
-- View parsed structured fields
-- Download parsed data as CSV
-- Search matching jobs via SerpApi directly from the app
-- Download matching jobs as CSV
-
-### What it does
-
-- Click to upload a CV (`.pdf`)
-- Shows selected CV filename
-- Click **Parse CV** button
-- Displays extracted PDF text
-- Displays parsed CV fields
-- Lets you download parsed fields as CSV
-- Suggests a matching job title from parsed skills
-- Lets you run Google Jobs search from inside the UI
-- Lets you download matching jobs as CSV
-
-### Install UI dependency
-
-```powershell
-python -m pip install streamlit
-```
-
-### Run UI
-
-```powershell
-streamlit run .\app.py
-```
-
-Then open the local URL shown in terminal (usually `http://localhost:8501`).
+The project demonstrates how a CV can be transformed into structured data and used to support job search decisions through ranked recommendations.
