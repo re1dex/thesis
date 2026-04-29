@@ -7,10 +7,15 @@ import os
 import re
 import hashlib
 import logging
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from secrets import compare_digest
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 import streamlit as st
@@ -24,12 +29,12 @@ except Exception:
     JOB_HUNTER_AVAILABLE = False
 
 from config import ALLOWED_UPLOAD_TYPES, APP_TITLE, DEFAULT_OUTPUT_FILENAME, MAX_UPLOAD_SIZE_MB
+from job_title_utils import suggest_job_title_from_parsed_resume
 from read_pdf_csv import extract_resume_data, extract_text_from_pdf_bytes
 
 
 DATA_STORE_PATH = Path(__file__).resolve().with_name("dashboard_store.json")
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -388,6 +393,84 @@ def _inject_styles() -> None:
             font-weight: 800 !important;
             opacity: 1 !important;
         }
+        
+        /* Fix only normal Streamlit form/text inputs */
+        [data-testid="stTextInput"] label,
+        [data-testid="stTextArea"] label,
+        [data-testid="stSelectbox"] label,
+        [data-testid="stFileUploader"] label,
+        [data-testid="stMarkdownContainer"] p {
+            color: #102a30 !important;
+        }
+
+        /* Fix typed input text */
+        .stTextInput input,
+        .stTextArea textarea {
+            color: #102a30 !important;
+            background-color: #ffffff !important;
+        }
+
+        /* Keep buttons readable */
+        .stButton button,
+        .stButton button * {
+            color: #ffffff !important;
+        }
+
+        /* Keep buttons readable */
+        .stButton button,
+        .stButton button * {
+            color: #ffffff !important;
+        }
+
+        /* Keep hero text white */
+        .hero,
+        .hero * {
+            color: #eef6f8 !important;
+        }
+
+        /* Keep ONLY selected tab text white */
+        .stTabs [data-baseweb="tab"][aria-selected="true"],
+        .stTabs [data-baseweb="tab"][aria-selected="true"] * {
+            color: #ffffff !important;
+        }
+
+        /* Fix dataframe/table text */
+        [data-testid="stDataFrame"] *,
+        [data-testid="stTable"] * {
+            color: #102a30 !important;
+        }
+        
+        /* Recruiter panel text fix */
+        .recruiter-panel,
+        .recruiter-panel *,
+        .recruiter-panel p,
+        .recruiter-panel span,
+        .recruiter-panel div,
+        .recruiter-panel h1,
+        .recruiter-panel h2,
+        .recruiter-panel h3 {
+            color: #102a30 !important;
+            opacity: 1 !important;
+        }
+        
+        /* Recruiter panel titles */
+        .recruiter-panel h1,
+        .recruiter-panel h2 {
+            color: #102a30 !important;
+            opacity: 1 !important;
+        }
+
+        .recruiter-panel h1 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+        }
+
+        .recruiter-panel h2 {
+            font-size: 1.35rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -433,14 +516,16 @@ def _load_store() -> dict[str, Any]:
     content.setdefault("users", {})
     for _, user_rec in content["users"].items():
         if isinstance(user_rec, dict):
-            user_rec.setdefault("password_hash", "")
-            user_rec.setdefault("created_at", "")
-            user_rec.setdefault("parsed_resume", None)
-            user_rec.setdefault("extracted_text", "")
-            user_rec.setdefault("parsed_file_name", "")
-            user_rec.setdefault("last_job_title", "")
-            user_rec.setdefault("jobs_rows", [])
-            user_rec.setdefault("parsed_history", [])
+            _ensure_user_store_fields(user_rec)
+            if not user_rec.get("contact") and user_rec.get("parsed_resume"):
+                parsed_resume = user_rec.get("parsed_resume")
+                if isinstance(parsed_resume, dict):
+                    email = _stringify(parsed_resume.get("email", ""))
+                    phone = _stringify(parsed_resume.get("phone", ""))
+                    if email:
+                        user_rec["contact"] = email
+                    elif phone:
+                        user_rec["contact"] = phone
     return content
 
 
@@ -450,6 +535,121 @@ def _save_store(store_data: dict[str, Any]) -> None:
         json.dumps(store_data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def _normalize_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", _stringify(value).lower()).strip()
+
+
+def _job_title_matches_query(job_title: Any, query: Any) -> bool:
+    normalized_title = _normalize_text(job_title)
+    normalized_query = _normalize_text(query)
+    if not normalized_title or not normalized_query:
+        return False
+
+    if normalized_query in normalized_title or normalized_title in normalized_query:
+        return True
+
+    query_tokens = [token for token in normalized_query.split() if len(token) >= 3]
+    if not query_tokens:
+        return False
+
+    title_tokens = set(normalized_title.split())
+    return all(token in title_tokens for token in query_tokens)
+
+
+def _ensure_user_store_fields(user_rec: dict[str, Any]) -> None:
+    user_rec.setdefault("password_hash", "")
+    user_rec.setdefault("created_at", "")
+    user_rec.setdefault("contact", "")
+    user_rec.setdefault("parsed_resume", None)
+    user_rec.setdefault("extracted_text", "")
+    user_rec.setdefault("parsed_file_name", "")
+    user_rec.setdefault("last_job_title", "")
+    user_rec.setdefault("jobs_rows", [])
+    user_rec.setdefault("matched_jobs", [])
+    user_rec.setdefault("parsed_history", [])
+
+
+def _append_matched_jobs(user_rec: dict[str, Any], search_query: str, jobs_df: pd.DataFrame) -> None:
+    matched_jobs = user_rec.setdefault("matched_jobs", [])
+    existing_keys = {
+        (
+            _normalize_text(job.get("job_title")),
+            _normalize_text(job.get("company")),
+            _normalize_text(job.get("location")),
+        )
+        for job in matched_jobs
+        if isinstance(job, dict)
+    }
+
+    for _, row in jobs_df.iterrows():
+        job_title = _stringify(row.get("job_title"))
+        company = _stringify(row.get("company"))
+        location = _stringify(row.get("location"))
+        key = (_normalize_text(job_title), _normalize_text(company), _normalize_text(location))
+        if key in existing_keys or not job_title:
+            continue
+
+        matched_jobs.append(
+            {
+                "job_title": job_title,
+                "company": company,
+                "location": location,
+                "search_query": search_query,
+                "matched_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            }
+        )
+        existing_keys.add(key)
+
+    if len(matched_jobs) > 100:
+        user_rec["matched_jobs"] = matched_jobs[-100:]
+
+
+def _find_recruiter_matches(store_data: dict[str, Any], query: str) -> list[dict[str, Any]]:
+    normalized_query = _normalize_text(query)
+    if not normalized_query:
+        return []
+
+    matches: list[dict[str, Any]] = []
+    for username, user_rec in store_data.get("users", {}).items():
+        if not isinstance(user_rec, dict):
+            continue
+
+        matched_titles: list[str] = []
+        seen_titles: set[str] = set()
+
+        title_sources: list[Any] = []
+        title_sources.extend(user_rec.get("matched_jobs", []) or [])
+        title_sources.extend(user_rec.get("jobs_rows", []) or [])
+
+        for job in title_sources:
+            if not isinstance(job, dict):
+                continue
+            job_title = _stringify(job.get("job_title") or job.get("title"))
+            if job_title and _job_title_matches_query(job_title, normalized_query):
+                normalized_title = _normalize_text(job_title)
+                if normalized_title not in seen_titles:
+                    matched_titles.append(job_title)
+                    seen_titles.add(normalized_title)
+
+        legacy_title = _stringify(user_rec.get("last_job_title"))
+        if legacy_title and _job_title_matches_query(legacy_title, normalized_query):
+            normalized_title = _normalize_text(legacy_title)
+            if normalized_title not in seen_titles:
+                matched_titles.append(legacy_title)
+                seen_titles.add(normalized_title)
+
+        if matched_titles:
+            matches.append(
+                {
+                    "username": username,
+                    "contact": _stringify(user_rec.get("contact")) or "-",
+                    "matched_titles": matched_titles,
+                }
+            )
+
+    return matches
 
 def _stringify(value: Any) -> str:
     if value is None:
@@ -472,43 +672,8 @@ def _skills_list(parsed_resume: dict[str, Any] | None) -> list[str]:
     return []
 
 
-def _first_experience_title(parsed_resume: dict[str, Any] | None) -> str:
-    if not parsed_resume:
-        return ""
-
-    experience = _stringify(parsed_resume.get("experience"))
-    if not experience:
-        return ""
-
-    lines = [line.strip() for line in re.split(r"\n|\|", experience) if line.strip()]
-    skip_keywords = {
-        "tasks",
-        "responsibilities",
-        "company",
-        "workplace",
-        "certificate",
-        "achievements",
-        "award",
-    }
-    for line in lines:
-        lowered = line.lower()
-        if any(keyword in lowered for keyword in skip_keywords):
-            continue
-        if re.search(r"\d{2}/\d{4}|present|\d{4}", lowered):
-            continue
-        if 2 <= len(line) <= 70:
-            return line
-
-    return ""
-
-
 def _suggest_job_title(parsed_resume: dict[str, Any] | None) -> str:
-    from_experience = _first_experience_title(parsed_resume)
-    if from_experience:
-        return from_experience
-
-    skills = _skills_list(parsed_resume)
-    return skills[0] if skills else ""
+    return suggest_job_title_from_parsed_resume(parsed_resume)
 
 
 def _field_confidence(field_name: str, field_value: Any) -> str:
@@ -645,6 +810,8 @@ if "current_user" not in st.session_state:
     st.session_state.current_user = ""
 if "admin_ok" not in st.session_state:
     st.session_state.admin_ok = False
+if "recruiter_ok" not in st.session_state:
+    st.session_state.recruiter_ok = False
 if "parsed_resume" not in st.session_state:
     st.session_state.parsed_resume = None
 if "extracted_text" not in st.session_state:
@@ -664,11 +831,7 @@ if "selected_history_index" not in st.session_state:
 if "access_mode" not in st.session_state:
     st.session_state.access_mode = "User"
 if "login_attempts" not in st.session_state:
-    st.session_state.login_attempts = {}  # {username: [(timestamp, success/fail), ...]}
-
-# Disabled automatic login from URL query param.
-# User must explicitly login from sidebar.
-# _restore_active_user_from_query_param(store)
+    st.session_state.login_attempts = {}  
 
 st.markdown(
     """
@@ -682,15 +845,15 @@ st.markdown(
 )
 
 st.sidebar.markdown("## Access Control")
-mode = st.sidebar.radio("Mode", ["User", "Admin"], horizontal=True, key="access_mode")
+mode = st.sidebar.radio("Mode", ["User", "Admin", "Recruiter"], horizontal=True, key="access_mode")
 
 if st.session_state.last_mode != mode:
     _clear_access_control_inputs()
-    has_active_session = bool(st.session_state.current_user) or bool(st.session_state.admin_ok)
+    has_active_session = bool(st.session_state.current_user) or bool(st.session_state.admin_ok) or bool(st.session_state.recruiter_ok)
     if mode == "User" and has_active_session:
-        # Returning from admin or user view should require explicit login again.
         st.session_state.current_user = ""
         st.session_state.admin_ok = False
+        st.session_state.recruiter_ok = False
         _clear_active_user_query_param()
         _reset_view(clear_upload=False)
 st.session_state.last_mode = mode
@@ -721,39 +884,73 @@ if mode == "Admin":
             _save_store(store)
             st.sidebar.success("SerpApi key saved.")
 
-        st.sidebar.markdown("### User List")
-        user_names = sorted(store["users"].keys())
-        if user_names:
-            selected_user = st.sidebar.selectbox("Select user", user_names)
-            user_data = store["users"].get(selected_user, {})
-            st.sidebar.caption(f"Created: {user_data.get('created_at', '-')}")
-            st.sidebar.caption(
-                "Has parsed CV: "
-                + ("Yes" if bool(user_data.get("parsed_resume")) else "No")
-            )
-            delete_col1, delete_col2 = st.sidebar.columns(2)
-            if delete_col1.button("Remove user"):
-                st.session_state.confirm_delete_user = True
-            if st.session_state.get("confirm_delete_user") and delete_col2.button("✓ Confirm"):
-                del store["users"][selected_user]
-                _save_store(store)
-                st.sidebar.success(f"Removed user: {selected_user}")
-                logger.info(f"Admin deleted user: {selected_user}")
-                st.session_state.confirm_delete_user = False
-                st.rerun()
-        else:
-            st.sidebar.info("No users stored yet.")
-
-    st.info("Admin view is for key management and user control.")
+    st.info("Admin view is for API key management.")
     st.stop()
+
+if mode == "Recruiter":
+    st.sidebar.markdown("### Recruiter Login")
+    recruiter_password = st.sidebar.text_input("Recruiter password", type="password", key="recruiter_password_input")
+    if st.sidebar.button("Login as Recruiter"):
+        expected_password = os.environ.get("APP_RECRUITER_PASSWORD", "recruiter123").strip()
+        if not compare_digest(recruiter_password, expected_password):
+            st.session_state.recruiter_ok = False
+            st.sidebar.error("Invalid recruiter password.")
+            logger.warning("Failed recruiter login attempt")
+        else:
+            st.session_state.recruiter_ok = True
+            logger.info("Recruiter login successful")
+
+    if st.session_state.get("recruiter_ok"):
+        st.sidebar.success("Recruiter session active.")
+        if st.sidebar.button("Logout Recruiter"):
+            st.session_state.recruiter_ok = False
+            st.rerun()
+
+        st.markdown(
+            """
+            <div class="recruiter-panel">
+                <h1>Recruiter Panel</h1>
+                <h2>Local Job Match Search</h2>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        recruiter_query = st.text_input(
+            "Search matched jobs by title",
+            placeholder="Enter a job title",
+            key="recruiter_job_query",
+        )
+
+        if recruiter_query.strip():
+            recruiter_matches = _find_recruiter_matches(store, recruiter_query)
+            if recruiter_matches:
+                st.write(f"Matches found: {len(recruiter_matches)}")
+                for match in recruiter_matches:
+                    with st.container(border=True):
+                        st.markdown(f"**Name:** {match['username']}")
+                        st.markdown(f"**Contact:** {match['contact']}")
+                        st.markdown(
+                            "**Matched job titles:** " + ", ".join(match["matched_titles"])
+                        )
+            else:
+                st.info("No local matches found for that title yet.")
+        else:
+            st.info("Type a job title to search the locally saved user matches.")
+    else:
+        st.info("Please login to access the recruiter panel.")
+   
+    st.stop()
+
 
 st.sidebar.markdown("### User Login")
 auth_action = st.sidebar.radio("User action", ["Login", "Register"], horizontal=True, key="user_auth_action")
 username_input = st.sidebar.text_input("Username", value="", key="username_input")
 user_password = st.sidebar.text_input("Password", type="password", key="user_password_input")
 confirm_password = ""
+contact_input = ""
 if auth_action == "Register":
     confirm_password = st.sidebar.text_input("Confirm password", type="password", key="confirm_password_input")
+    contact_input = st.sidebar.text_input("Contact", key="contact_input")
 
 def _is_username_valid(username: str) -> bool:
     """Validate username format: 3-32 chars, alphanumeric, underscore, hyphen only."""
@@ -788,11 +985,13 @@ if st.sidebar.button(auth_action):
                     store["users"][username_clean] = {
                         "password_hash": _hash_password(user_password),
                         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                        "contact": contact_input.strip(),
                         "parsed_resume": None,
                         "extracted_text": "",
                         "parsed_file_name": "",
                         "last_job_title": "",
                         "jobs_rows": [],
+                        "matched_jobs": [],
                         "parsed_history": [],
                     }
                     _save_store(store)
@@ -806,7 +1005,6 @@ if st.sidebar.button(auth_action):
                     stored_hash = user_rec.get("password_hash", "")
                     current_hash = _hash_password(user_password)
 
-                    # Backward compatibility for old records without password hash.
                     if not stored_hash:
                         user_rec["password_hash"] = current_hash
                         _save_store(store)
@@ -841,7 +1039,6 @@ def _validate_parsed_resume(data: Any) -> bool:
     if not isinstance(data, dict):
         return False
     required_keys = {"file_name", "full_name", "email", "skills"}
-    # Allow missing fields, just check it's a dict with at least some expected keys
     has_at_least_one = any(k in data for k in required_keys)
     return has_at_least_one
 
@@ -928,7 +1125,6 @@ else:
                 with st.spinner("Parsing CV..."):
                     pdf_bytes = uploaded_file.read()
                     
-                    # Validate PDF file format
                     if not pdf_bytes.startswith(b'%PDF'):
                         st.error("❌ File is not a valid PDF. Please upload a PDF file.")
                         logger.warning(f"Non-PDF file upload attempt: {uploaded_file.name}")
@@ -950,7 +1146,14 @@ else:
                         user_rec["jobs_rows"] = []
                         user_rec.setdefault("parsed_history", [])
                         
-                        # Limit history to 50 entries
+                        if not user_rec.get("contact"):
+                            email = _stringify(parsed_resume.get("email", ""))
+                            phone = _stringify(parsed_resume.get("phone", ""))
+                            if email:
+                                user_rec["contact"] = email
+                            elif phone:
+                                user_rec["contact"] = phone
+                        
                         MAX_HISTORY = 50
                         if len(user_rec["parsed_history"]) >= MAX_HISTORY:
                             user_rec["parsed_history"] = user_rec["parsed_history"][1:]
@@ -1013,7 +1216,7 @@ if st.session_state.parsed_resume is not None:
     st.progress(min(confidence_avg, 100), text=f"Parse confidence estimate: {confidence_avg}%")
 
     tab_overview, tab_fields, tab_text, tab_jobs = st.tabs(
-        ["Overview", "Parsed Fields", "Raw Text", "Job Match"]
+        ["Overview", "Parsed Fields", "Raw Text", "Job Discovery"]
     )
 
     with tab_overview:
@@ -1066,7 +1269,6 @@ if st.session_state.parsed_resume is not None:
                     try:
                         parsed_at = item.get('parsed_at', '-')
                         file_name = item.get('file_name', 'unknown')
-                        # Convert ISO format to human-friendly time
                         if parsed_at != '-':
                             dt = datetime.fromisoformat(parsed_at.replace('Z', '+00:00'))
                             friendly_time = dt.strftime("%b %d, %I:%M %p")
@@ -1142,9 +1344,9 @@ if st.session_state.parsed_resume is not None:
             st.warning("No extractable text was found in this PDF.")
 
     with tab_jobs:
-        st.markdown('<div class="section-title">Find Matching Job</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Job Discovery</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="helper-note">Suggested job title uses first experience title, then skills if needed.</div>',
+            '<div class="helper-note">Suggested job title is inferred from your experience and skills to support job discovery.</div>',
             unsafe_allow_html=True,
         )
 
@@ -1161,7 +1363,7 @@ if st.session_state.parsed_resume is not None:
             else:
                 st.warning("Admin has not saved a SerpApi key yet.")
 
-        find_clicked = st.button("Find Matching Job", type="primary", use_container_width=True)
+        find_clicked = st.button("Discover Jobs", type="primary", use_container_width=True)
 
         if find_clicked:
             if not JOB_HUNTER_AVAILABLE:
@@ -1205,6 +1407,7 @@ if st.session_state.parsed_resume is not None:
                         user_rec = store["users"][st.session_state.current_user]
                         user_rec["last_job_title"] = job_title
                         user_rec["jobs_rows"] = ranked.to_dict(orient="records")
+                        _append_matched_jobs(user_rec, job_title, ranked)
                         _save_store(store)
                         logger.info(f"Found {len(ranked)} jobs for user {st.session_state.current_user}")
                 except Exception as e:
@@ -1227,7 +1430,7 @@ if st.session_state.parsed_resume is not None:
             st.markdown(
                 (
                     '<div class="best-job">'
-                    '<h4>Best Matching Job</h4>'
+                    '<h4>Top Discovered Job</h4>'
                     f"<div><strong>{html.escape(_stringify(top_job.get('job_title')))}</strong>"
                     f" at {html.escape(_stringify(top_job.get('company')))}</div>"
                     f"<div>Ranking: {int(top_job.get('Ranking', 0))}</div>"
@@ -1243,7 +1446,7 @@ if st.session_state.parsed_resume is not None:
             st.session_state.jobs_df.to_csv(jobs_csv, index=False)
             csv_filename = f"{st.session_state.job_title_input.lower().replace(' ', '_')}_jobs.csv"
             st.download_button(
-                "Download Matching Jobs CSV",
+                "Download Discovered Jobs CSV",
                 data=jobs_csv.getvalue(),
                 file_name=csv_filename,
                 mime="text/csv",

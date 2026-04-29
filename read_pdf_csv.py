@@ -23,7 +23,6 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     text_parts: List[str] = []
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            # Use smart extraction to preserve reading order in multi-column resumes.
             page_text = _extract_page_text_smart(page)
             if page_text:
                 text_parts.append(page_text)
@@ -249,7 +248,6 @@ def extract_resume_data(text: str, file_name: Optional[str] = None) -> Dict[str,
 
 
 def _largest_column_gap(words: List[Dict[str, Any]], page_width: float) -> float | None:
-    # First, try row-level split detection: find the largest horizontal gap inside each row.
     sorted_words = sorted(words, key=lambda word: (word.get("top", 0.0), word.get("x0", 0.0)))
     if len(sorted_words) < 20:
         return None
@@ -296,7 +294,6 @@ def _largest_column_gap(words: List[Dict[str, Any]], page_width: float) -> float
             return (row_split_points[mid - 1] + row_split_points[mid]) / 2.0
         return row_split_points[mid]
 
-    # Fallback: page-level largest gap over x0 values.
     x_positions = sorted(word["x0"] for word in words if "x0" in word)
     max_gap = 0.0
     gap_index = -1

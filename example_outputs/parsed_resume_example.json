@@ -1,0 +1,13 @@
+{
+  "file_name": "sample_resume.pdf",
+  "full_name": "Raul Zeynalov",
+  "name": "Raul",
+  "surname": "Zeynalov",
+  "email": "raul@example.com",
+  "phone": "+36 30 123 4567",
+  "address": "Budapest, Hungary",
+  "linkedin": "https://www.linkedin.com/in/raulzeynalov",
+  "skills": ["Python", "SQL", "Data Analysis"],
+  "education": "BSc in Computer Science",
+  "experience": "Python Developer"
+}

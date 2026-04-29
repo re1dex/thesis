@@ -1,7 +1,5 @@
 """Google Jobs search helpers and optional CLI runner."""
 
-# Install once in terminal: pip install google-search-results pandas ipython
-
 import os
 from getpass import getpass
 from pathlib import Path
@@ -11,15 +9,16 @@ import pandas as pd
 from IPython.display import display
 from serpapi import GoogleSearch
 
-# Try to import resume parser helpers; if unavailable, continue without parser.
 try:
     from read_pdf_csv import discover_file, extract_resume_data, extract_text_from_pdf_bytes
+    from job_title_utils import suggest_job_title_from_parsed_resume
 
     RESUME_PARSER_AVAILABLE = True
 except Exception:
     extract_text_from_pdf_bytes = None
     extract_resume_data = None
     discover_file = None
+    suggest_job_title_from_parsed_resume = None
     RESUME_PARSER_AVAILABLE = False
 
 
@@ -96,12 +95,10 @@ def suggest_job_title_from_resume(resume_path: Path) -> Optional[str]:
             pdf_bytes = resume_path.read_bytes()
             text = extract_text_from_pdf_bytes(pdf_bytes)
             parsed = extract_resume_data(text, file_name=resume_path.name)
-            skills = parsed.get("skills") or []
-            if isinstance(skills, list) and skills:
-                return skills[0]
-            elif isinstance(skills, str) and skills:
-                # if skills came as a single string, try splitting
-                return skills.split(";")[0].strip().split("|")[0]
+            if suggest_job_title_from_parsed_resume is not None:
+                suggested = suggest_job_title_from_parsed_resume(parsed)
+                if suggested:
+                    return suggested
         except Exception as exc:
             print(f"Resume parse failed: {exc}")
     else:
@@ -117,7 +114,6 @@ def _run_cli() -> None:
         "Enter your SerpApi API key: "
     )
 
-    # Ask for an optional resume to auto-suggest a job title based on skills.
     script_dir = Path(__file__).resolve().parent
     suggested_title = None
     if RESUME_PARSER_AVAILABLE:
